@@ -11,9 +11,9 @@ const PORT = process.env.PORT || 3000;
 
 app.use(cors());
 
-// New endpoint specifically for fetching pet data
-app.get('/api/get-pets', async (req, res) => {
-    console.log('Received request for /api/get-pets');
+// New endpoint to detect and report all network requests
+app.get('/api/detect-requests', async (req, res) => {
+    console.log('Received request for /api/detect-requests');
     let browser = null;
     const starPetsUrl = 'https://starpets.pw/';
 
@@ -36,31 +36,33 @@ app.get('/api/get-pets', async (req, res) => {
 
         console.log('Browser launched. Creating new page...');
         const page = await browser.newPage();
+        await page.setViewport({ width: 1920, height: 1080 });
+
+        const detectedUrls = [];
+        // Set up the listener *before* navigating
+        page.on('request', request => {
+            // We only care about document, script, and data (fetch/xhr) requests for now
+            const types = ['document', 'script', 'fetch', 'xhr'];
+            if (types.includes(request.resourceType())) {
+                 console.log('Detected request:', request.url());
+                 detectedUrls.push(request.url());
+            }
+        });
         
         console.log(`Navigating to ${starPetsUrl}...`);
-        // We initiate navigation but don't wait for the page to be fully idle.
-        page.goto(starPetsUrl, { waitUntil: 'domcontentloaded', timeout: 90000 });
+        // Wait until there are no new network connections for at least 500ms
+        await page.goto(starPetsUrl, { waitUntil: 'networkidle2', timeout: 90000 });
+        
+        console.log('Page has reached network idle. Sending back detected URLs.');
 
-        console.log('Waiting for the pet data API response...');
-        // This is the key step: we explicitly wait for the network request that contains the pet data.
-        const apiResponse = await page.waitForResponse(
-            response => response.url().includes('api/v1/trade-cards/list') && response.status() === 200,
-            { timeout: 60000 } // Wait up to 60 seconds for this specific API call
-        );
-
-        console.log('API response captured! Parsing JSON...');
-        const jsonData = await apiResponse.json();
-        const pets = jsonData.items;
-
-        if (pets && Array.isArray(pets)) {
-            console.log(`Successfully retrieved ${pets.length} pets.`);
-            res.status(200).json({ success: true, pets: pets });
-        } else {
-            throw new Error('Could not parse the pet items from the API response.');
-        }
+        res.status(200).json({ 
+            success: true, 
+            count: detectedUrls.length,
+            urls: detectedUrls 
+        });
 
     } catch (error) {
-        console.error('An error occurred while fetching pet data:', error);
+        console.error('An error occurred while detecting requests:', error);
         res.status(500).json({ success: false, message: 'An error occurred on the server.', error: error.message });
     } finally {
         if (browser) {
