@@ -17,7 +17,8 @@ app.use(cors());
 app.get('/api/pets', async (req, res) => {
     console.log('Received request to fetch pet data...');
     let browser = null;
-    const starPetsMarketUrl = 'https://starpets.pw/market?game=adp&orderBy=price&order=asc';
+    // The API call happens on the homepage, not the market page specifically
+    const starPetsUrl = 'https://starpets.pw/';
 
     try {
         console.log('Launching stealth browser...');
@@ -38,22 +39,25 @@ app.get('/api/pets', async (req, res) => {
         let apiData = null;
         page.on('response', async (response) => {
             const url = response.url();
-            // This is the target API endpoint the website calls
-            if (url.includes('api/v2/market/inventory')) {
+            // This is the updated target API endpoint from your HAR file
+            if (url.includes('api/v1/trade-cards/list')) {
                 try {
-                    apiData = await response.json();
+                    const jsonData = await response.json();
+                    // The actual items are nested under a 'items' key in the response
+                    apiData = jsonData.items; 
                 } catch (e) {
                     console.error('Failed to parse JSON from response:', e);
                 }
             }
         });
 
-        console.log(`Navigating to ${starPetsMarketUrl}...`);
-        await page.goto(starPetsMarketUrl, { waitUntil: 'networkidle2', timeout: 60000 });
+        console.log(`Navigating to ${starPetsUrl}...`);
+        await page.goto(starPetsUrl, { waitUntil: 'networkidle2', timeout: 60000 });
 
         if (apiData) {
             console.log('Successfully captured API data.');
-            res.json(apiData);
+            // We now send the apiData directly since it's already the array of items
+            res.json({ items: apiData });
         } else {
             throw new Error('Could not capture the market inventory API data from the page.');
         }
@@ -70,5 +74,5 @@ app.get('/api/pets', async (req, res) => {
 });
 
 app.listen(PORT, () => {
-    console.log(`Server is running on port ${PORT}`);
+    console.log(`Server is running on http://localhost:${PORT}`);
 });
