@@ -11,9 +11,9 @@ const PORT = process.env.PORT || 3000;
 
 app.use(cors());
 
-// A single, simple endpoint to test the connection.
-app.get('/api/test-connection', async (req, res) => {
-    console.log('Received request for /api/test-connection');
+// New endpoint specifically for fetching pet data
+app.get('/api/get-pets', async (req, res) => {
+    console.log('Received request for /api/get-pets');
     let browser = null;
     const starPetsUrl = 'https://starpets.pw/';
 
@@ -34,22 +34,33 @@ app.get('/api/test-connection', async (req, res) => {
             ignoreHTTPSErrors: true,
         });
 
-        console.log('Browser launched. Navigating to page...');
+        console.log('Browser launched. Creating new page...');
         const page = await browser.newPage();
-        await page.goto(starPetsUrl, { waitUntil: 'networkidle2', timeout: 90000 });
+        
+        console.log(`Navigating to ${starPetsUrl}...`);
+        // We initiate navigation but don't wait for the page to be fully idle.
+        page.goto(starPetsUrl, { waitUntil: 'domcontentloaded', timeout: 90000 });
 
-        console.log('Page loaded. Getting title...');
-        const pageTitle = await page.title();
+        console.log('Waiting for the pet data API response...');
+        // This is the key step: we explicitly wait for the network request that contains the pet data.
+        const apiResponse = await page.waitForResponse(
+            response => response.url().includes('api/v1/trade-cards/list') && response.status() === 200,
+            { timeout: 60000 } // Wait up to 60 seconds for this specific API call
+        );
 
-        if (pageTitle) {
-            console.log(`Successfully retrieved title: "${pageTitle}"`);
-            res.status(200).json({ success: true, title: pageTitle });
+        console.log('API response captured! Parsing JSON...');
+        const jsonData = await apiResponse.json();
+        const pets = jsonData.items;
+
+        if (pets && Array.isArray(pets)) {
+            console.log(`Successfully retrieved ${pets.length} pets.`);
+            res.status(200).json({ success: true, pets: pets });
         } else {
-            throw new Error('Could not retrieve the page title. The page may not have loaded correctly.');
+            throw new Error('Could not parse the pet items from the API response.');
         }
 
     } catch (error) {
-        console.error('An error occurred during the connection test:', error);
+        console.error('An error occurred while fetching pet data:', error);
         res.status(500).json({ success: false, message: 'An error occurred on the server.', error: error.message });
     } finally {
         if (browser) {
