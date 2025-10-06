@@ -11,9 +11,9 @@ const PORT = process.env.PORT || 3000;
 
 app.use(cors());
 
-// New endpoint to detect and report all network requests
-app.get('/api/detect-requests', async (req, res) => {
-    console.log('Received request for /api/detect-requests');
+// Endpoint to fetch pet data from the new API endpoint
+app.get('/api/get-pets', async (req, res) => {
+    console.log('Received request for /api/get-pets');
     let browser = null;
     const starPetsUrl = 'https://starpets.pw/';
 
@@ -37,32 +37,33 @@ app.get('/api/detect-requests', async (req, res) => {
         console.log('Browser launched. Creating new page...');
         const page = await browser.newPage();
         await page.setViewport({ width: 1920, height: 1080 });
-
-        const detectedUrls = [];
-        // Set up the listener *before* navigating
-        page.on('request', request => {
-            // We only care about document, script, and data (fetch/xhr) requests for now
-            const types = ['document', 'script', 'fetch', 'xhr'];
-            if (types.includes(request.resourceType())) {
-                 console.log('Detected request:', request.url());
-                 detectedUrls.push(request.url());
-            }
-        });
         
         console.log(`Navigating to ${starPetsUrl}...`);
-        // Wait until there are no new network connections for at least 500ms
-        await page.goto(starPetsUrl, { waitUntil: 'networkidle2', timeout: 90000 });
-        
-        console.log('Page has reached network idle. Sending back detected URLs.');
+        page.goto(starPetsUrl, { waitUntil: 'domcontentloaded', timeout: 90000 });
 
-        res.status(200).json({ 
-            success: true, 
-            count: detectedUrls.length,
-            urls: detectedUrls 
-        });
+        console.log('Waiting for the new target API response: market.apineural.com...');
+        // **THE FIX:** We are now targeting the new API endpoint we discovered.
+        const apiResponse = await page.waitForResponse(
+            response => response.url().includes('market.apineural.com/api/store/items/all') && response.status() === 200,
+            { timeout: 60000 }
+        );
+
+        console.log('API response captured! Parsing JSON...');
+        const jsonData = await apiResponse.json();
+        
+        // The structure of the new API response is unknown, so we'll check for common patterns.
+        const pets = jsonData.items || jsonData.data || (Array.isArray(jsonData) ? jsonData : null);
+
+        if (pets && Array.isArray(pets)) {
+            console.log(`Successfully retrieved ${pets.length} pets.`);
+            res.status(200).json({ success: true, pets: pets });
+        } else {
+            console.error('Could not find a pet array in the response. Full response:', jsonData);
+            throw new Error('Could not parse the pet items from the new API response.');
+        }
 
     } catch (error) {
-        console.error('An error occurred while detecting requests:', error);
+        console.error('An error occurred while fetching pet data:', error);
         res.status(500).json({ success: false, message: 'An error occurred on the server.', error: error.message });
     } finally {
         if (browser) {
