@@ -11,11 +11,13 @@ const PORT = process.env.PORT || 3000;
 
 app.use(cors());
 
-// Endpoint to fetch pet data from the new API endpoint
-app.get('/api/get-pets', async (req, res) => {
-    console.log('Received request for /api/get-pets');
+// New endpoint to check for the presence of the search bar
+app.get('/api/check-search-bar', async (req, res) => {
+    console.log('Received request for /api/check-search-bar');
     let browser = null;
     const starPetsUrl = 'https://starpets.pw/';
+    // This is a CSS selector that looks for an input field whose placeholder contains "Search"
+    const searchBarSelector = 'input[placeholder*="Search"]';
 
     try {
         console.log('Launching browser...');
@@ -34,37 +36,25 @@ app.get('/api/get-pets', async (req, res) => {
             ignoreHTTPSErrors: true,
         });
 
-        console.log('Browser launched. Creating new page...');
+        console.log('Browser launched. Navigating to page...');
         const page = await browser.newPage();
-        await page.setViewport({ width: 1920, height: 1080 });
-        
-        console.log(`Navigating to ${starPetsUrl}...`);
-        page.goto(starPetsUrl, { waitUntil: 'domcontentloaded', timeout: 90000 });
+        await page.goto(starPetsUrl, { waitUntil: 'networkidle2', timeout: 90000 });
+        console.log('Page loaded. Looking for the quick search bar...');
 
-        console.log('Waiting for the new target API response: market.apineural.com...');
-        // **THE FIX:** We are now targeting the new API endpoint we discovered.
-        const apiResponse = await page.waitForResponse(
-            response => response.url().includes('market.apineural.com/api/store/items/all') && response.status() === 200,
-            { timeout: 60000 }
-        );
+        // Wait for the selector to appear on the page. If it doesn't appear within the timeout, it will throw an error.
+        await page.waitForSelector(searchBarSelector, { timeout: 30000 });
 
-        console.log('API response captured! Parsing JSON...');
-        const jsonData = await apiResponse.json();
-        
-        // The structure of the new API response is unknown, so we'll check for common patterns.
-        const pets = jsonData.items || jsonData.data || (Array.isArray(jsonData) ? jsonData : null);
-
-        if (pets && Array.isArray(pets)) {
-            console.log(`Successfully retrieved ${pets.length} pets.`);
-            res.status(200).json({ success: true, pets: pets });
-        } else {
-            console.error('Could not find a pet array in the response. Full response:', jsonData);
-            throw new Error('Could not parse the pet items from the new API response.');
-        }
+        console.log('Success! Quick search bar was found on the page.');
+        res.status(200).json({ success: true, message: 'Quick search bar was found.' });
 
     } catch (error) {
-        console.error('An error occurred while fetching pet data:', error);
-        res.status(500).json({ success: false, message: 'An error occurred on the server.', error: error.message });
+        console.error('An error occurred during the check:', error);
+        // Provide a specific error message if it was a timeout
+        if (error.name === 'TimeoutError') {
+             res.status(500).json({ success: false, message: `Failed to find the search bar (${searchBarSelector}) within the time limit.` });
+        } else {
+             res.status(500).json({ success: false, message: 'An unknown server error occurred.', error: error.message });
+        }
     } finally {
         if (browser) {
             console.log('Closing browser.');
@@ -76,3 +66,4 @@ app.get('/api/get-pets', async (req, res) => {
 app.listen(PORT, () => {
     console.log(`Server is running on http://localhost:${PORT}`);
 });
+
