@@ -1,3 +1,4 @@
+
 const express = require('express');
 const cors = require('cors');
 const puppeteer = require('puppeteer-extra');
@@ -16,8 +17,8 @@ app.get('/api/check-search-bar', async (req, res) => {
     console.log('Received request for /api/check-search-bar');
     let browser = null;
     const starPetsUrl = 'https://starpets.pw/';
-    // This is a CSS selector that looks for an input field whose placeholder contains "Search"
-    const searchBarSelector = 'input[placeholder*="Search"]';
+    // **THE FIX:** Using the exact placeholder text you found.
+    const searchBarSelector = 'input[placeholder="Quick search"]';
 
     try {
         console.log('Launching browser...');
@@ -51,7 +52,7 @@ app.get('/api/check-search-bar', async (req, res) => {
         console.error('An error occurred during the check:', error);
         // Provide a specific error message if it was a timeout
         if (error.name === 'TimeoutError') {
-             res.status(500).json({ success: false, message: `Failed to find the search bar (${searchBarSelector}) within the time limit.` });
+             res.status(500).json({ success: false, message: `Failed to find the search bar ('${searchBarSelector}') within the time limit.` });
         } else {
              res.status(500).json({ success: false, message: 'An unknown server error occurred.', error: error.message });
         }
@@ -66,4 +67,3 @@ app.get('/api/check-search-bar', async (req, res) => {
 app.listen(PORT, () => {
     console.log(`Server is running on http://localhost:${PORT}`);
 });
-
