@@ -1,4 +1,3 @@
-
 const express = require('express');
 const cors = require('cors');
 const puppeteer = require('puppeteer-extra');
@@ -11,13 +10,19 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 
 app.use(cors());
+app.use(express.json()); // Middleware to parse JSON bodies
 
-// New endpoint to check for the presence of the search bar
-app.get('/api/check-search-bar', async (req, res) => {
-    console.log('Received request for /api/check-search-bar');
+// New endpoint to search for a specific pet
+app.post('/api/search-pet', async (req, res) => {
+    const { petName } = req.body;
+    console.log(`Received request to search for pet: "${petName}"`);
+    
+    if (!petName) {
+        return res.status(400).json({ success: false, message: 'Pet name is required.' });
+    }
+
     let browser = null;
     const starPetsUrl = 'https://starpets.pw/';
-    // **THE FIX:** Using the exact placeholder text you found.
     const searchBarSelector = 'input[placeholder="Quick search"]';
 
     try {
@@ -40,19 +45,25 @@ app.get('/api/check-search-bar', async (req, res) => {
         console.log('Browser launched. Navigating to page...');
         const page = await browser.newPage();
         await page.goto(starPetsUrl, { waitUntil: 'networkidle2', timeout: 90000 });
-        console.log('Page loaded. Looking for the quick search bar...');
-
-        // Wait for the selector to appear on the page. If it doesn't appear within the timeout, it will throw an error.
+        
+        console.log('Page loaded. Finding the search bar...');
         await page.waitForSelector(searchBarSelector, { timeout: 30000 });
+        console.log('Search bar found. Typing pet name...');
 
-        console.log('Success! Quick search bar was found on the page.');
-        res.status(200).json({ success: true, message: 'Quick search bar was found.' });
+        // Type the pet name into the search bar and press Enter
+        await page.type(searchBarSelector, petName);
+        await page.keyboard.press('Enter');
+        
+        console.log(`Successfully searched for "${petName}".`);
+        
+        // For now, we just confirm the action was completed.
+        // In the next step, we'll capture the results after this navigation.
+        res.status(200).json({ success: true, message: `Successfully initiated search for "${petName}".` });
 
     } catch (error) {
-        console.error('An error occurred during the check:', error);
-        // Provide a specific error message if it was a timeout
+        console.error('An error occurred during the search operation:', error);
         if (error.name === 'TimeoutError') {
-             res.status(500).json({ success: false, message: `Failed to find the search bar ('${searchBarSelector}') within the time limit.` });
+             res.status(500).json({ success: false, message: `Could not find the search bar to perform the search.` });
         } else {
              res.status(500).json({ success: false, message: 'An unknown server error occurred.', error: error.message });
         }
