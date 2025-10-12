@@ -40,7 +40,7 @@ app.get('/api/check-status/:jobId', (req, res) => {
     }
     res.status(200).json(job);
     if (job.status === 'COMPLETED' || job.status === 'FAILED') {
-        setTimeout(() => delete jobs[jobId], 60000);
+        setTimeout(() => delete jobs[jobId], 120000); // Clean up after 2 minutes
     }
 });
 
@@ -53,7 +53,11 @@ const runScraper = async (jobId) => {
         job.logs.push(message);
         if(isError) job.status = 'FAILED';
     };
-    const addData = (item) => job.data.push(item);
+    const updateData = (index, updates) => {
+        if(job.data[index]) {
+            job.data[index] = { ...job.data[index], ...updates };
+        }
+    };
 
     let browser = null;
     try {
@@ -87,6 +91,23 @@ const runScraper = async (jobId) => {
         
         const petTitle = await page.$eval('h1[class*="_name_"]', el => el.textContent.trim());
 
+        // --- Core Scraping Functions with Retry Logic ---
+        async function clickButtonByText(text, retries = 3) {
+            for (let i = 0; i < retries; i++) {
+                const buttonSelector = `//a[.//p[normalize-space()="${text}"]]`;
+                const [button] = await page.$x(buttonSelector);
+                if (button) {
+                    await button.click();
+                    await page.waitForTimeout(500); // Wait for UI to update
+                    return true;
+                }
+                addLog(`  - Retry ${i+1}/${retries}: Button "${text}" not found. Waiting...`);
+                await page.waitForTimeout(1000);
+            }
+            addLog(`  - ERROR: Failed to find button "${text}" after ${retries} retries.`, true);
+            return false; // Return false instead of throwing error to continue process
+        }
+
         async function getButtonState(propName) {
             const buttonSelector = `//a[.//p[normalize-space()="${propName}"]]`;
             const [button] = await page.$x(buttonSelector);
@@ -94,40 +115,17 @@ const runScraper = async (jobId) => {
             return await button.evaluate(node => node.querySelector('div[class*="_selected_"]') !== null);
         }
 
-        async function clickButtonByText(text) {
-            const initialUrl = page.url();
-            const buttonSelector = `//a[.//p[normalize-space()="${text}"]]`;
-            const [button] = await page.$x(buttonSelector);
-            if (!button) {
-                addLog(`  - WARN: Button "${text}" not found.`, false);
-                return;
-            }
-            await button.click();
-            
-            try {
-                await page.waitForFunction(
-                    (expectedUrl) => window.location.href !== expectedUrl,
-                    { timeout: 5000 }, // Wait up to 5 seconds
-                    initialUrl
-                );
-            } catch (e) {
-                addLog(`    - Note: URL did not change for "${text}". This may be expected.`);
-            }
-        }
-
         async function setProperties(targetState) {
-            const currentFlyable = await getButtonState('Flyable');
-            if (currentFlyable !== targetState.flyable) {
+            if (await getButtonState('Flyable') !== targetState.flyable) {
                 addLog(`  - Setting Flyable to ${targetState.flyable}`);
                 await clickButtonByText('Flyable');
             }
-            const currentRideable = await getButtonState('Rideable');
-            if (currentRideable !== targetState.rideable) {
+            if (await getButtonState('Rideable') !== targetState.rideable) {
                 addLog(`  - Setting Rideable to ${targetState.rideable}`);
                 await clickButtonByText('Rideable');
             }
         }
-
+        
         const itemTypes = ['Ordinary', 'Neon', 'Mega Neon'];
         const properties = {
             'Base': { flyable: false, rideable: false },
@@ -139,10 +137,10 @@ const runScraper = async (jobId) => {
         const neonAges = ['Reborn', 'Twinkle', 'Sparkle', 'Flare', 'Sunshine', 'Luminous'];
 
         for (const itemType of itemTypes) {
-            addLog(`Processing Item Type: ${itemType}`);
-            await clickButtonByText(itemType);
+             addLog(`Processing Item Type: ${itemType}`);
+             await clickButtonByText(itemType);
 
-            for (const propName in properties) {
+             for (const propName in properties) {
                 addLog(`  Processing Property: ${propName}`);
                 await setProperties(properties[propName]);
                 
@@ -153,17 +151,55 @@ const runScraper = async (jobId) => {
                         await clickButtonByText(age);
                         const id = page.url().split('/').pop();
                         const combination = `${itemType} ${propName} ${petTitle}, Age: ${age}`;
-                        addData({ combination, id });
+                        job.data.push({ combination, id, verified: null }); // Add to job data immediately
                     }
                 } else { // Mega Neon
                     const id = page.url().split('/').pop();
                     const combination = `${itemType} ${propName} ${petTitle}`;
-                    addData({ combination, id });
+                    job.data.push({ combination, id, verified: null });
                 }
             }
         }
+        
+        addLog(`Initial collection complete. Starting verification and correction phase...`);
 
-        addLog('Collection process completed successfully.');
+        // --- **UPGRADED** Verification and Correction Phase ---
+        for (let i = 0; i < job.data.length; i++) {
+            const item = job.data[i];
+            const petUrlName = petTitle.toLowerCase().replace(/ /g, '_');
+            const url = `https://starpets.pw/shop/pet/${petUrlName}/${item.id}`;
+            addLog(`Verifying: "${item.combination}"...`);
+            await page.goto(url, { waitUntil: 'networkidle2' });
+
+            const expected = {
+                itemType: item.combination.includes('Ordinary') ? 'Ordinary' : item.combination.includes('Neon') ? 'Neon' : 'Mega Neon',
+                flyable: item.combination.includes('Flyable (F)') || item.combination.includes('Flyable & Rideable (FR)'),
+                rideable: item.combination.includes('Rideable (R)') || item.combination.includes('Flyable & Rideable (FR)'),
+                age: item.combination.split('Age: ')[1] || null
+            };
+
+            const isCorrect = (await getButtonState(expected.itemType)) &&
+                              (await getButtonState('Flyable') === expected.flyable) &&
+                              (await getButtonState('Rideable') === expected.rideable) &&
+                              (expected.age ? await getButtonState(expected.age) : true);
+
+            if (isCorrect) {
+                addLog(`  - OK.`);
+                updateData(i, { verified: true });
+            } else {
+                addLog(`  - Mismatch found. Attempting self-correction...`);
+                await clickButtonByText(expected.itemType);
+                await setProperties({ flyable: expected.flyable, rideable: expected.rideable });
+                if (expected.age) {
+                    await clickButtonByText(expected.age);
+                }
+                const correctedId = page.url().split('/').pop();
+                addLog(`  - Correction complete. New ID is ${correctedId}.`);
+                updateData(i, { id: correctedId, verified: true });
+            }
+        }
+
+        addLog('Verification and correction complete.');
         job.status = 'COMPLETED';
 
     } catch (error) {
