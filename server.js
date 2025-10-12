@@ -40,7 +40,7 @@ app.get('/api/check-status/:jobId', (req, res) => {
     }
     res.status(200).json(job);
     if (job.status === 'COMPLETED' || job.status === 'FAILED') {
-        setTimeout(() => delete jobs[jobId], 60000); // Clean up after 1 minute
+        setTimeout(() => delete jobs[jobId], 60000);
     }
 });
 
@@ -87,7 +87,6 @@ const runScraper = async (jobId) => {
         
         const petTitle = await page.$eval('h1[class*="_name_"]', el => el.textContent.trim());
 
-        // **REFINED STATE MANAGEMENT AND CLICKING LOGIC**
         async function getButtonState(propName) {
             const buttonSelector = `//a[.//p[normalize-space()="${propName}"]]`;
             const [button] = await page.$x(buttonSelector);
@@ -96,6 +95,7 @@ const runScraper = async (jobId) => {
         }
 
         async function clickButtonByText(text) {
+            const initialUrl = page.url();
             const buttonSelector = `//a[.//p[normalize-space()="${text}"]]`;
             const [button] = await page.$x(buttonSelector);
             if (!button) {
@@ -103,7 +103,17 @@ const runScraper = async (jobId) => {
                 return;
             }
             await button.click();
-            await page.waitForTimeout(400); // Crucial short delay for UI to update
+            
+            // **THE FIX: Actively wait for the URL to change instead of a static timeout.**
+            try {
+                await page.waitForFunction(
+                    (expectedUrl) => window.location.href !== expectedUrl,
+                    { timeout: 5000 }, // Wait up to 5 seconds
+                    initialUrl
+                );
+            } catch (e) {
+                addLog(`    - Note: URL did not change for "${text}". This may be expected.`);
+            }
         }
 
         async function setProperties(targetState) {
@@ -140,6 +150,7 @@ const runScraper = async (jobId) => {
                 const ages = itemType === 'Ordinary' ? ordinaryAges : (itemType === 'Neon' ? neonAges : []);
                 if (ages.length > 0) {
                     for (const age of ages) {
+                        addLog(`    - Clicking Age: ${age}`);
                         await clickButtonByText(age);
                         const id = page.url().split('/').pop();
                         const combination = `${itemType} ${propName} ${petTitle}, Age: ${age}`;
