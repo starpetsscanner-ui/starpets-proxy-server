@@ -12,156 +12,135 @@ const PORT = process.env.PORT || 3000;
 app.use(cors());
 app.use(express.json());
 
-// This is our stable "base build" endpoint. We will keep it for testing.
-app.post('/api/search-pet', async (req, res) => {
-    // ... [The existing, stable code from our base build remains here] ...
-    const { petName } = req.body;
-    console.log(`Received request to search for pet: "${petName}"`);
-    if (!petName) { return res.status(400).json({ success: false, message: 'Pet name is required.' }); }
-    let browser = null;
-    const starPetsUrl = 'https://starpets.pw/';
-    const searchBarSelector = 'input[placeholder="Quick search"]';
-    const petNameHeaderSelector = 'h1[class*="_name_"]';
-    try {
-        browser = await puppeteer.launch({ executablePath: await chromium.executablePath(), headless: chromium.headless, args: [...chromium.args, '--no-sandbox'], ignoreHTTPSErrors: true });
-        const page = await browser.newPage();
-        await page.goto(starPetsUrl, { waitUntil: 'networkidle2', timeout: 90000 });
-        console.log('Page loaded. Finding search bar and typing pet name...');
-        await page.type(searchBarSelector, petName);
-        console.log('Pressing Enter and waiting for search results to appear...');
-        await page.keyboard.press('Enter');
-        const resultsContainerSelector = 'div[class*="_container_"]'; 
-        await page.waitForSelector(resultsContainerSelector, { timeout: 30000 });
-        console.log('Search results page loaded. Finding link for the pet...');
-        const petLinkSelector = `//a[contains(., "${petName}")]`;
-        const [petLink] = await page.$x(petLinkSelector);
-        if (!petLink) { throw new Error(`Could not find a link for "${petName}" on the search results page.`); }
-        console.log('Pet link found. Clicking and waiting for the pet sales page...');
-        await Promise.all([
-            page.waitForNavigation({ waitUntil: 'networkidle2' }),
-            petLink.click(),
-        ]);
-        console.log('Pet sales page loaded. Verifying pet name...');
-        await page.waitForSelector(petNameHeaderSelector, { timeout: 15000 });
-        const finalUrl = page.url();
-        console.log(`Verification complete. Landed on URL: ${finalUrl}`);
-        res.status(200).json({ success: true, message: `Verification successful. Landed on URL: ${finalUrl}` });
-    } catch (error) {
-        console.error('An error occurred during the search and navigation process:', error);
-        res.status(500).json({ success: false, message: error.message });
-    } finally {
-        if (browser) { await browser.close(); }
-    }
+// Health check endpoint to wake up the server on Render
+app.get('/health', (req, res) => {
+    res.status(200).json({ status: 'Server is awake.' });
 });
 
-// Endpoint for collecting all 52 IDs
-app.post('/api/collect-pet-ids', async (req, res) => {
+// New streaming endpoint for collecting IDs
+app.post('/api/collect-pet-ids-stream', (req, res) => {
     const { petName } = req.body;
-    console.log(`Starting full ID collection for: "${petName}"`);
-    if (!petName) { return res.status(400).json({ success: false, message: 'Pet name is required.' }); }
 
-    let browser = null;
-    try {
-        browser = await puppeteer.launch({
-            executablePath: await chromium.executablePath(),
-            headless: chromium.headless,
-            args: [...chromium.args, '--no-sandbox', '--disable-setuid-sandbox'],
-            ignoreHTTPSErrors: true,
-        });
-        const page = await browser.newPage();
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Connection', 'keep-alive');
+    res.flushHeaders();
 
-        // --- Start of our stable "base build" logic ---
-        await page.goto('https://starpets.pw/', { waitUntil: 'networkidle2', timeout: 90000 });
-        await page.type('input[placeholder="Quick search"]', petName);
-        await page.keyboard.press('Enter');
-        await page.waitForSelector('div[class*="_container_"]', { timeout: 30000 });
-        const [petLink] = await page.$x(`//a[contains(., "${petName}")]`);
-        if (!petLink) throw new Error(`Could not find a link for "${petName}".`);
-        await Promise.all([
-            page.waitForNavigation({ waitUntil: 'networkidle2' }),
-            petLink.click(),
-        ]);
-        await page.waitForSelector('h1[class*="_name_"]', { timeout: 30000 });
-        console.log(`On the main sales page for ${petName}. Beginning ID collection.`);
-        // --- End of base build logic ---
+    const sendUpdate = (data) => {
+        if (!res.writableEnded) {
+            res.write(`data: ${JSON.stringify(data)}\n\n`);
+        }
+    };
 
-        const petTitle = await page.$eval('h1[class*="_name_"]', el => el.textContent);
-        const collectedData = [];
+    const runScraper = async () => {
+        let browser = null;
+        try {
+            if (!petName) throw new Error('Pet name is required.');
 
-        async function selectOptionAndGetId(optionText) {
-            console.log(`  - Processing: ${optionText}`);
-            const initialUrl = page.url();
-            const buttonSelector = `//a[.//p[normalize-space()="${optionText}"]]`;
+            sendUpdate({ type: 'log', message: 'Launching stealth browser...' });
+            browser = await puppeteer.launch({
+                executablePath: await chromium.executablePath(),
+                headless: chromium.headless,
+                args: [...chromium.args, '--no-sandbox', '--disable-setuid-sandbox', '--single-process'],
+            });
+            sendUpdate({ type: 'log', message: 'Browser launched.' });
+
+            const page = await browser.newPage();
+            sendUpdate({ type: 'log', message: 'Navigating to StarPets.pw...' });
+            await page.goto('https://starpets.pw/', { waitUntil: 'networkidle2', timeout: 90000 });
+
+            sendUpdate({ type: 'log', message: `Searching for "${petName}"...` });
+            await page.type('input[placeholder="Quick search"]', petName);
+            await page.keyboard.press('Enter');
+            await page.waitForSelector('div[class*="_container_"]', { timeout: 30000 });
+
+            sendUpdate({ type: 'log', message: 'Clicking pet link...' });
+            const [petLink] = await page.$x(`//a[contains(., "${petName}")]`);
+            if (!petLink) throw new Error(`Could not find a link for "${petName}".`);
             
-            const [button] = await page.$x(buttonSelector);
-            if (!button) {
-                console.log(`    - Warning: Button "${optionText}" not found. Skipping.`);
-                return null;
-            }
+            await Promise.all([
+                petLink.click(),
+                page.waitForSelector('h1[class*="_name_"]', { timeout: 30000 })
+            ]);
+            sendUpdate({ type: 'log', message: 'On sales page. Starting collection...' });
+            
+            const petTitle = await page.$eval('h1[class*="_name_"]', el => el.textContent.trim());
 
-            // **THE FIX: Check if the button is already selected before clicking.**
-            const isSelected = await button.evaluate(node => node.querySelector('div[class*="_selected_"]') !== null);
-
-            if (isSelected) {
-                console.log(`    - "${optionText}" is already selected. Recording current ID.`);
-                return initialUrl.split('/').pop();
-            }
-
-            console.log(`    - Clicking "${optionText}"...`);
-            await button.click();
-            try {
-                await page.waitForFunction(url => window.location.href !== url, { timeout: 10000 }, initialUrl);
-            } catch (e) {
-                console.log(`    - URL did not change after click. This may be expected.`);
-            }
-            const newUrl = page.url();
-            return newUrl.split('/').pop();
-        }
-
-        const itemTypes = ['Ordinary', 'Neon', 'Mega Neon'];
-        const properties = {
-            'Base': [],
-            'Flyable (F)': ['Flyable'],
-            'Rideable (R)': ['Rideable'],
-            'Flyable & Rideable (FR)': ['Flyable', 'Rideable']
-        };
-        const ordinaryAges = ['Newborn', 'Junior', 'Pre-Teen', 'Teen', 'Post-Teen', 'Full Grown'];
-        const neonAges = ['Reborn', 'Twinkle', 'Sparkle', 'Flare', 'Sunshine', 'Luminous'];
-        
-        // This logic needs to be more careful about deselecting
-        for (const itemType of itemTypes) {
-             await selectOptionAndGetId(itemType);
-             for (const propName in properties) {
-                const propsToClick = properties[propName];
-                for(const prop of propsToClick) await selectOptionAndGetId(prop);
-
-                const ages = itemType === 'Ordinary' ? ordinaryAges : (itemType === 'Neon' ? neonAges : []);
-                if (ages.length > 0) {
-                    for (const age of ages) {
-                        const id = await selectOptionAndGetId(age);
-                        const combination = `${itemType} ${propName} ${petTitle}, Age: ${age}`;
-                        if(id) collectedData.push({ combination, id });
-                    }
-                } else { // Mega Neon has no ages
-                    const id = page.url().split('/').pop();
-                    const combination = `${itemType} ${propName} ${petTitle}`;
-                    if(id) collectedData.push({ combination, id });
+            async function clickOption(optionText) {
+                const buttonSelector = `//a[.//p[normalize-space()="${optionText}"]]`;
+                const [button] = await page.$x(buttonSelector);
+                if (!button) {
+                    sendUpdate({ type: 'log', message: `  - Button "${optionText}" not found. Skipping.` });
+                    return false;
                 }
+                const isSelected = await button.evaluate(node => node.querySelector('div[class*="_selected_"]') !== null);
+                if (isSelected) {
+                    sendUpdate({ type: 'log', message: `  - "${optionText}" is already selected.` });
+                    return true;
+                }
+                sendUpdate({ type: 'log', message: `  - Clicking "${optionText}"...` });
+                await button.click();
+                await page.waitForTimeout(500); // Wait for JS to update
+                return true;
+            }
 
-                // Deselect properties by clicking them again
-                for (const prop of propsToClick.slice().reverse()) await selectOptionAndGetId(prop);
-             }
+            const itemTypes = ['Ordinary', 'Neon', 'Mega Neon'];
+            const properties = {
+                'Base': [],
+                'Flyable (F)': ['Flyable'],
+                'Rideable (R)': ['Rideable'],
+                'Flyable & Rideable (FR)': ['Flyable', 'Rideable']
+            };
+            const ordinaryAges = ['Newborn', 'Junior', 'Pre-Teen', 'Teen', 'Post-Teen', 'Full Grown'];
+            const neonAges = ['Reborn', 'Twinkle', 'Sparkle', 'Flare', 'Sunshine', 'Luminous'];
+            
+            // Start with a clean slate
+            await clickOption('Ordinary');
+
+            for (const itemType of itemTypes) {
+                await clickOption(itemType);
+                for (const propName in properties) {
+                    const propsToClick = properties[propName];
+                    for (const prop of propsToClick) await clickOption(prop);
+                    
+                    const ages = itemType === 'Ordinary' ? ordinaryAges : (itemType === 'Neon' ? neonAges : []);
+                    if (ages.length > 0) {
+                        for (const age of ages) {
+                            if (await clickOption(age)) {
+                                const id = page.url().split('/').pop();
+                                const combination = `${itemType} ${propName} ${petTitle}, Age: ${age}`;
+                                sendUpdate({ type: 'data', payload: { combination, id } });
+                            }
+                        }
+                    } else { // Mega Neon
+                        const id = page.url().split('/').pop();
+                        const combination = `${itemType} ${propName} ${petTitle}`;
+                        sendUpdate({ type: 'data', payload: { combination, id } });
+                    }
+                    // Deselect properties
+                    for (const prop of propsToClick) await clickOption(prop);
+                }
+            }
+            sendUpdate({ type: 'success', message: 'Collection process completed successfully.' });
+
+        } catch (error) {
+            console.error('Scraper error:', error);
+            sendUpdate({ type: 'error', message: error.message });
+        } finally {
+            if (browser) {
+                sendUpdate({ type: 'log', message: 'Closing browser...' });
+                await browser.close();
+            }
+            sendUpdate({ type: 'log', message: 'Process finished. Closing connection.' });
+            res.end();
         }
-        
-        console.log(`Collection complete. Found ${collectedData.length} combinations.`);
-        res.status(200).json({ success: true, data: collectedData });
+    };
 
-    } catch (error) {
-        console.error('An error occurred during full ID collection:', error);
-        res.status(500).json({ success: false, message: error.message });
-    } finally {
-        if (browser) await browser.close();
-    }
+    runScraper();
+    req.on('close', () => {
+        console.log('Client closed connection');
+        res.end();
+    });
 });
 
 app.listen(PORT, () => {
