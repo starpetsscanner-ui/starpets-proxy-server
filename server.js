@@ -51,12 +51,14 @@ app.post('/api/search-pet', async (req, res) => {
         console.log('Page loaded. Finding search bar and typing pet name...');
         await page.type(searchBarSelector, petName);
         
-        console.log('Pressing Enter and waiting for search results page to load...');
-        // We wait for the navigation to the search results page to complete
-        await Promise.all([
-            page.waitForNavigation({ waitUntil: 'networkidle2' }),
-            page.keyboard.press('Enter'),
-        ]);
+        console.log('Pressing Enter and waiting for search results to appear...');
+        // **THE FIX:** Instead of waiting for a full page navigation, which doesn't happen,
+        // we now just press Enter and then wait for the results container to appear on the page.
+        await page.keyboard.press('Enter');
+        
+        // This selector targets a div whose class name contains "_container_", matching the one you found.
+        const resultsContainerSelector = 'div[class*="_container_"]'; 
+        await page.waitForSelector(resultsContainerSelector, { timeout: 30000 });
         
         console.log('Search results page loaded. Finding link for the pet...');
         // We'll use an XPath selector to find the first link that contains the pet's name.
@@ -99,4 +101,6 @@ app.post('/api/search-pet', async (req, res) => {
 app.listen(PORT, () => {
     console.log(`Server is running on http://localhost:${PORT}`);
 });
+
+
 
