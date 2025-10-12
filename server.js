@@ -53,11 +53,7 @@ const runScraper = async (jobId) => {
         job.logs.push(message);
         if(isError) job.status = 'FAILED';
     };
-    const updateData = (index, updates) => {
-        if(job.data[index]) {
-            job.data[index] = { ...job.data[index], ...updates };
-        }
-    };
+    const addData = (item) => job.data.push(item);
 
     let browser = null;
     try {
@@ -91,23 +87,8 @@ const runScraper = async (jobId) => {
         
         const petTitle = await page.$eval('h1[class*="_name_"]', el => el.textContent.trim());
 
-        // --- Core Scraping Functions with Retry Logic ---
-        async function clickButtonByText(text, retries = 3) {
-            for (let i = 0; i < retries; i++) {
-                const buttonSelector = `//a[.//p[normalize-space()="${text}"]]`;
-                const [button] = await page.$x(buttonSelector);
-                if (button) {
-                    await button.click();
-                    await page.waitForTimeout(500); // Wait for UI to update
-                    return true;
-                }
-                addLog(`  - Retry ${i+1}/${retries}: Button "${text}" not found. Waiting...`);
-                await page.waitForTimeout(1000);
-            }
-            addLog(`  - ERROR: Failed to find button "${text}" after ${retries} retries.`, true);
-            return false; // Return false instead of throwing error to continue process
-        }
-
+        // --- **NEW** "Set, Confirm, Record" Logic ---
+        
         async function getButtonState(propName) {
             const buttonSelector = `//a[.//p[normalize-space()="${propName}"]]`;
             const [button] = await page.$x(buttonSelector);
@@ -115,17 +96,20 @@ const runScraper = async (jobId) => {
             return await button.evaluate(node => node.querySelector('div[class*="_selected_"]') !== null);
         }
 
-        async function setProperties(targetState) {
-            if (await getButtonState('Flyable') !== targetState.flyable) {
-                addLog(`  - Setting Flyable to ${targetState.flyable}`);
-                await clickButtonByText('Flyable');
+        async function clickButtonByText(text) {
+            const buttonSelector = `//a[.//p[normalize-space()="${text}"]]`;
+            const [button] = await page.$x(buttonSelector);
+            if (!button) {
+                addLog(`  - WARN: Button "${text}" not found.`, false);
+                return;
             }
-            if (await getButtonState('Rideable') !== targetState.rideable) {
-                addLog(`  - Setting Rideable to ${targetState.rideable}`);
-                await clickButtonByText('Rideable');
-            }
+            await button.click();
+            // Wait for a short period to let the page's javascript execute
+            await page.waitForTimeout(500);
         }
         
+        // --- Create a flat list of all 52 target states ---
+        const allCombinations = [];
         const itemTypes = ['Ordinary', 'Neon', 'Mega Neon'];
         const properties = {
             'Base': { flyable: false, rideable: false },
@@ -136,70 +120,48 @@ const runScraper = async (jobId) => {
         const ordinaryAges = ['Newborn', 'Junior', 'Pre-Teen', 'Teen', 'Post-Teen', 'Full Grown'];
         const neonAges = ['Reborn', 'Twinkle', 'Sparkle', 'Flare', 'Sunshine', 'Luminous'];
 
-        for (const itemType of itemTypes) {
-             addLog(`Processing Item Type: ${itemType}`);
-             await clickButtonByText(itemType);
-
-             for (const propName in properties) {
-                addLog(`  Processing Property: ${propName}`);
-                await setProperties(properties[propName]);
-                
+        itemTypes.forEach(itemType => {
+            for (const propName in properties) {
                 const ages = itemType === 'Ordinary' ? ordinaryAges : (itemType === 'Neon' ? neonAges : []);
                 if (ages.length > 0) {
-                    for (const age of ages) {
-                        addLog(`    - Clicking Age: ${age}`);
-                        await clickButtonByText(age);
-                        const id = page.url().split('/').pop();
-                        const combination = `${itemType} ${propName} ${petTitle}, Age: ${age}`;
-                        job.data.push({ combination, id, verified: null }); // Add to job data immediately
-                    }
+                    ages.forEach(age => {
+                        allCombinations.push({ itemType, propName, properties: properties[propName], age });
+                    });
                 } else { // Mega Neon
-                    const id = page.url().split('/').pop();
-                    const combination = `${itemType} ${propName} ${petTitle}`;
-                    job.data.push({ combination, id, verified: null });
+                    allCombinations.push({ itemType, propName, properties: properties[propName], age: null });
                 }
             }
-        }
-        
-        addLog(`Initial collection complete. Starting verification and correction phase...`);
+        });
 
-        // --- **UPGRADED** Verification and Correction Phase ---
-        for (let i = 0; i < job.data.length; i++) {
-            const item = job.data[i];
-            const petUrlName = petTitle.toLowerCase().replace(/ /g, '_');
-            const url = `https://starpets.pw/shop/pet/${petUrlName}/${item.id}`;
-            addLog(`Verifying: "${item.combination}"...`);
-            await page.goto(url, { waitUntil: 'networkidle2' });
+        // --- Loop through each discrete target state ---
+        for (const target of allCombinations) {
+            const combinationName = `${target.itemType} ${target.propName} ${petTitle}${target.age ? ', Age: ' + target.age : ''}`;
+            addLog(`Setting state for: "${combinationName}"`);
 
-            const expected = {
-                itemType: item.combination.includes('Ordinary') ? 'Ordinary' : item.combination.includes('Neon') ? 'Neon' : 'Mega Neon',
-                flyable: item.combination.includes('Flyable (F)') || item.combination.includes('Flyable & Rideable (FR)'),
-                rideable: item.combination.includes('Rideable (R)') || item.combination.includes('Flyable & Rideable (FR)'),
-                age: item.combination.split('Age: ')[1] || null
-            };
+            // 1. SET STATE
+            if (!(await getButtonState(target.itemType))) await clickButtonByText(target.itemType);
+            if (await getButtonState('Flyable') !== target.properties.flyable) await clickButtonByText('Flyable');
+            if (await getButtonState('Rideable') !== target.properties.rideable) await clickButtonByText('Rideable');
+            if (target.age && !(await getButtonState(target.age))) await clickButtonByText(target.age);
 
-            const isCorrect = (await getButtonState(expected.itemType)) &&
-                              (await getButtonState('Flyable') === expected.flyable) &&
-                              (await getButtonState('Rideable') === expected.rideable) &&
-                              (expected.age ? await getButtonState(expected.age) : true);
+            // 2. CONFIRM STATE
+            addLog(`  - Confirming state...`);
+            const isItemTypeCorrect = await getButtonState(target.itemType);
+            const isFlyableCorrect = await getButtonState('Flyable') === target.properties.flyable;
+            const isRideableCorrect = await getButtonState('Rideable') === target.properties.rideable;
+            const isAgeCorrect = target.age ? await getButtonState(target.age) : true;
 
-            if (isCorrect) {
-                addLog(`  - OK.`);
-                updateData(i, { verified: true });
+            // 3. RECORD ID
+            if (isItemTypeCorrect && isFlyableCorrect && isRideableCorrect && isAgeCorrect) {
+                const id = page.url().split('/').pop();
+                addLog(`  - State confirmed. ID: ${id}`);
+                addData({ combination: combinationName, id });
             } else {
-                addLog(`  - Mismatch found. Attempting self-correction...`);
-                await clickButtonByText(expected.itemType);
-                await setProperties({ flyable: expected.flyable, rideable: expected.rideable });
-                if (expected.age) {
-                    await clickButtonByText(expected.age);
-                }
-                const correctedId = page.url().split('/').pop();
-                addLog(`  - Correction complete. New ID is ${correctedId}.`);
-                updateData(i, { id: correctedId, verified: true });
+                addLog(`  - ERROR: State confirmation failed for "${combinationName}". Skipping.`, true);
             }
         }
 
-        addLog('Verification and correction complete.');
+        addLog('Collection process completed successfully.');
         job.status = 'COMPLETED';
 
     } catch (error) {
