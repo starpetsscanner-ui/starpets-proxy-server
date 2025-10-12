@@ -12,28 +12,22 @@ const PORT = process.env.PORT || 3000;
 app.use(cors());
 app.use(express.json());
 
-// This new endpoint will stream status updates
 app.post('/api/collect-pet-ids-stream', (req, res) => {
     const { petName } = req.body;
 
-    // Set headers for Server-Sent Events (SSE)
     res.setHeader('Content-Type', 'text/event-stream');
     res.setHeader('Cache-Control', 'no-cache');
     res.setHeader('Connection', 'keep-alive');
-    res.flushHeaders(); // Flush the headers to establish the connection
+    res.flushHeaders();
 
-    // Helper function to send updates to the client
     const sendUpdate = (data) => {
         res.write(`data: ${JSON.stringify(data)}\n\n`);
     };
 
-    // Main scraping logic wrapped in an async function
     const runScraper = async () => {
         let browser = null;
         try {
-            if (!petName) {
-                throw new Error('Pet name is required.');
-            }
+            if (!petName) throw new Error('Pet name is required.');
 
             sendUpdate({ type: 'log', message: 'Launching stealth browser...' });
             browser = await puppeteer.launch({
@@ -59,46 +53,97 @@ app.post('/api/collect-pet-ids-stream', (req, res) => {
             if (!petLink) throw new Error(`Could not find a link for "${petName}".`);
 
             await petLink.click();
-            sendUpdate({ type: 'log', message: 'Waiting for pet sales page to load...' });
             await page.waitForSelector('h1[class*="_name_"]', { timeout: 30000 });
-
             sendUpdate({ type: 'log', message: 'On sales page. Starting ID collection...' });
-
-            // ... [The complex 52-combination scraping logic would go here] ...
-            // For now, as a test, let's just grab the first ID.
-            const initialUrl = page.url();
-            const initialId = initialUrl.split('/').pop();
+            
             const petTitle = await page.$eval('h1[class*="_name_"]', el => el.textContent);
-            
-            sendUpdate({ type: 'data', payload: { combination: `Default ${petTitle}`, id: initialId } });
-            
-            // Simulate finding more IDs for demonstration
-            sendUpdate({ type: 'log', message: 'Simulating finding more combinations...' });
-            await new Promise(resolve => setTimeout(resolve, 1000)); // fake delay
-            sendUpdate({ type: 'data', payload: { combination: `Neon ${petTitle}`, id: parseInt(initialId) + 1 } });
+            const collectedData = [];
 
-            sendUpdate({ type: 'log', message: 'Collection process finished.' });
+            // Helper to click buttons and extract ID
+            async function selectOptionAndGetId(optionText) {
+                sendUpdate({ type: 'log', message: `  - Selecting: ${optionText}` });
+                const initialUrl = page.url();
+                const buttonSelector = `//div[contains(@class, "_tagContent_")]/div[normalize-space()="${optionText}"]`;
+                const [button] = await page.$x(buttonSelector);
+
+                if (!button) {
+                    sendUpdate({ type: 'log', message: `    - Warning: Button "${optionText}" not found. Skipping.` });
+                    return null;
+                }
+                
+                await button.click();
+                
+                try {
+                    await page.waitForFunction(url => window.location.href !== url, { timeout: 5000 }, initialUrl);
+                    const newUrl = page.url();
+                    const id = newUrl.split('/').pop();
+                    sendUpdate({ type: 'log', message: `    - Found ID: ${id}` });
+                    return id;
+                } catch (e) {
+                    sendUpdate({ type: 'error', message: `URL did not change for "${optionText}". It might be the default.` });
+                    return initialUrl.split('/').pop();
+                }
+            }
+
+            const itemTypes = ['Ordinary', 'Neon', 'Mega Neon'];
+            const properties = {
+                'Base': [],
+                'Flyable (F)': ['Flyable'],
+                'Rideable (R)': ['Rideable'],
+                'Flyable & Rideable (FR)': ['Flyable', 'Rideable']
+            };
+            const ordinaryAges = ['Newborn', 'Junior', 'Pre-Teen', 'Teen', 'Post-Teen', 'Full Grown'];
+            const neonAges = ['Reborn', 'Twinkle', 'Sparkle', 'Flare', 'Sunshine', 'Luminous'];
+
+            for (const itemType of itemTypes) {
+                await selectOptionAndGetId(itemType);
+                for (const propName in properties) {
+                    const propsToClick = properties[propName];
+                    for (const prop of propsToClick) await selectOptionAndGetId(prop);
+
+                    const ages = itemType === 'Ordinary' ? ordinaryAges : (itemType === 'Neon' ? neonAges : []);
+
+                    if (ages.length > 0) {
+                        for (const age of ages) {
+                            const id = await selectOptionAndGetId(age);
+                            const combination = `${itemType} ${propName} ${petTitle}, Age: ${age}`;
+                            if (id) {
+                                sendUpdate({ type: 'data', payload: { combination, id } });
+                                collectedData.push({ combination, id });
+                            }
+                            await selectOptionAndGetId(age); // De-select
+                        }
+                    } else { // Mega Neon case
+                        const url = page.url();
+                        const id = url.split('/').pop();
+                        const combination = `${itemType} ${propName} ${petTitle}`;
+                        if (id) {
+                            sendUpdate({ type: 'data', payload: { combination, id } });
+                            collectedData.push({ combination, id });
+                        }
+                    }
+                    for (const prop of propsToClick) await selectOptionAndGetId(prop); // De-select
+                }
+            }
+
+            sendUpdate({ type: 'log', message: `Collection complete. Found ${collectedData.length} total combinations.` });
 
         } catch (error) {
             console.error('Scraper error:', error);
             sendUpdate({ type: 'error', message: error.message });
         } finally {
-            if (browser) {
-                await browser.close();
-            }
+            if (browser) await browser.close();
             sendUpdate({ type: 'log', message: 'Process complete. Closing connection.' });
-            res.end(); // Close the SSE connection
+            res.end();
         }
     };
 
     runScraper();
-
     req.on('close', () => {
         console.log('Client closed connection');
         res.end();
     });
 });
-
 
 app.listen(PORT, () => {
     console.log(`Server is running on http://localhost:${PORT}`);
