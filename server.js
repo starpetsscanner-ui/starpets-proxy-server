@@ -66,11 +66,15 @@ app.post('/api/collect-pet-ids-stream', (req, res) => {
 
             sendUpdate({ type: 'log', message: 'Pressing Enter and waiting for results...' });
             await page.keyboard.press('Enter');
-            await page.waitForSelector('div[class*="_container_"]', { timeout: 30000 });
+
+            // **THE FIX:** Instead of waiting for a generic container, we now wait specifically
+            // for the link containing the pet's name. This is much more reliable.
+            const petLinkSelector = `//a[contains(., "${petName}")]`;
+            await page.waitForXPath(petLinkSelector, { timeout: 30000 });
             sendUpdate({ type: 'log', message: 'Search results detected on page.' });
 
             sendUpdate({ type: 'log', message: 'Finding and clicking pet link...' });
-            const [petLink] = await page.$x(`//a[contains(., "${petName}")]`);
+            const [petLink] = await page.$x(petLinkSelector);
             if (!petLink) throw new Error(`Could not find a link for "${petName}" on the results page.`);
 
             // Click and wait for the final page to load by watching for the H1 tag
