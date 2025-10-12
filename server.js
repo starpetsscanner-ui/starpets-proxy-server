@@ -87,7 +87,6 @@ const runScraper = async (jobId) => {
         
         const petTitle = await page.$eval('h1[class*="_name_"]', el => el.textContent.trim());
 
-        // **REFINED STATE MANAGEMENT AND CLICKING LOGIC**
         async function getButtonState(propName) {
             const buttonSelector = `//a[.//p[normalize-space()="${propName}"]]`;
             const [button] = await page.$x(buttonSelector);
@@ -96,6 +95,7 @@ const runScraper = async (jobId) => {
         }
 
         async function clickButtonByText(text) {
+            const initialUrl = page.url();
             const buttonSelector = `//a[.//p[normalize-space()="${text}"]]`;
             const [button] = await page.$x(buttonSelector);
             if (!button) {
@@ -103,17 +103,24 @@ const runScraper = async (jobId) => {
                 return;
             }
             await button.click();
-            await page.waitForTimeout(500); // A short, crucial delay for the UI to re-render
+            
+            try {
+                await page.waitForFunction(
+                    (expectedUrl) => window.location.href !== expectedUrl,
+                    { timeout: 5000 }, // Wait up to 5 seconds
+                    initialUrl
+                );
+            } catch (e) {
+                addLog(`    - Note: URL did not change for "${text}". This may be expected.`);
+            }
         }
 
         async function setProperties(targetState) {
-            // Always read the LIVE state from the page before acting
             const currentFlyable = await getButtonState('Flyable');
             if (currentFlyable !== targetState.flyable) {
                 addLog(`  - Setting Flyable to ${targetState.flyable}`);
                 await clickButtonByText('Flyable');
             }
-            // Re-read the page state for the next property, in case the first click caused a re-render
             const currentRideable = await getButtonState('Rideable');
             if (currentRideable !== targetState.rideable) {
                 addLog(`  - Setting Rideable to ${targetState.rideable}`);
@@ -141,9 +148,8 @@ const runScraper = async (jobId) => {
                 
                 const ages = itemType === 'Ordinary' ? ordinaryAges : (itemType === 'Neon' ? neonAges : []);
                 if (ages.length > 0) {
-                    // Reset to first age to ensure a clean slate for this property set
-                    await clickButtonByText(ages[0]); 
                     for (const age of ages) {
+                        addLog(`    - Clicking Age: ${age}`);
                         await clickButtonByText(age);
                         const id = page.url().split('/').pop();
                         const combination = `${itemType} ${propName} ${petTitle}, Age: ${age}`;
