@@ -87,12 +87,12 @@ const runScraper = async (jobId) => {
         
         const petTitle = await page.$eval('h1[class*="_name_"]', el => el.textContent.trim());
 
-        // --- **NEW** "Set, Confirm, Record" Logic ---
+        // --- **NEW** "Click and Confirm" Logic ---
         
         async function getButtonState(propName) {
             const buttonSelector = `//a[.//p[normalize-space()="${propName}"]]`;
             const [button] = await page.$x(buttonSelector);
-            if (!button) return false;
+            if (!button) return null; // Return null if not found
             return await button.evaluate(node => node.querySelector('div[class*="_selected_"]') !== null);
         }
 
@@ -103,12 +103,28 @@ const runScraper = async (jobId) => {
                 addLog(`  - WARN: Button "${text}" not found.`, false);
                 return;
             }
+            
+            const initialState = await getButtonState(text);
             await button.click();
-            // Wait for a short period to let the page's javascript execute
-            await page.waitForTimeout(500);
+
+            // Actively wait for the button's state to change
+            try {
+                await page.waitForFunction(
+                    (selector, expectedState) => {
+                        const element = document.evaluate(selector, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null).singleNodeValue;
+                        if (!element) return false;
+                        const isSelected = element.querySelector('div[class*="_selected_"]') !== null;
+                        return isSelected === expectedState;
+                    },
+                    { timeout: 5000 },
+                    buttonSelector,
+                    !initialState
+                );
+            } catch (e) {
+                addLog(`  - Note: State did not change for "${text}" after click. This may be expected.`);
+            }
         }
         
-        // --- Create a flat list of all 52 target states ---
         const allCombinations = [];
         const itemTypes = ['Ordinary', 'Neon', 'Mega Neon'];
         const properties = {
@@ -127,13 +143,12 @@ const runScraper = async (jobId) => {
                     ages.forEach(age => {
                         allCombinations.push({ itemType, propName, properties: properties[propName], age });
                     });
-                } else { // Mega Neon
+                } else {
                     allCombinations.push({ itemType, propName, properties: properties[propName], age: null });
                 }
             }
         });
 
-        // --- Loop through each discrete target state ---
         for (const target of allCombinations) {
             const combinationName = `${target.itemType} ${target.propName} ${petTitle}${target.age ? ', Age: ' + target.age : ''}`;
             addLog(`Setting state for: "${combinationName}"`);
@@ -150,7 +165,7 @@ const runScraper = async (jobId) => {
             const isFlyableCorrect = await getButtonState('Flyable') === target.properties.flyable;
             const isRideableCorrect = await getButtonState('Rideable') === target.properties.rideable;
             const isAgeCorrect = target.age ? await getButtonState(target.age) : true;
-
+            
             // 3. RECORD ID
             if (isItemTypeCorrect && isFlyableCorrect && isRideableCorrect && isAgeCorrect) {
                 const id = page.url().split('/').pop();
