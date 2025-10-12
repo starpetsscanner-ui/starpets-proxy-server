@@ -40,7 +40,7 @@ app.get('/api/check-status/:jobId', (req, res) => {
     }
     res.status(200).json(job);
     if (job.status === 'COMPLETED' || job.status === 'FAILED') {
-        setTimeout(() => delete jobs[jobId], 120000); // Clean up after 2 minutes
+        setTimeout(() => delete jobs[jobId], 120000);
     }
 });
 
@@ -63,6 +63,7 @@ const runScraper = async (jobId) => {
             executablePath: await chromium.executablePath(),
             headless: chromium.headless,
             args: [...chromium.args, '--no-sandbox', '--disable-setuid-sandbox', '--single-process'],
+            protocolTimeout: 240000, // **NEW:** Increase timeout to 4 minutes to prevent crash
         });
         addLog('Browser launched.');
 
@@ -87,12 +88,12 @@ const runScraper = async (jobId) => {
         
         const petTitle = await page.$eval('h1[class*="_name_"]', el => el.textContent.trim());
 
-        // --- **NEW** "Click and Confirm" Logic ---
+        // --- **NEW** High-Speed "Click and Watch" Logic ---
         
         async function getButtonState(propName) {
             const buttonSelector = `//a[.//p[normalize-space()="${propName}"]]`;
             const [button] = await page.$x(buttonSelector);
-            if (!button) return null; // Return null if not found
+            if (!button) return null;
             return await button.evaluate(node => node.querySelector('div[class*="_selected_"]') !== null);
         }
 
@@ -107,7 +108,7 @@ const runScraper = async (jobId) => {
             const initialState = await getButtonState(text);
             await button.click();
 
-            // Actively wait for the button's state to change
+            // Actively wait for the button's visual state to change. This is much faster than waiting for URL.
             try {
                 await page.waitForFunction(
                     (selector, expectedState) => {
@@ -116,12 +117,12 @@ const runScraper = async (jobId) => {
                         const isSelected = element.querySelector('div[class*="_selected_"]') !== null;
                         return isSelected === expectedState;
                     },
-                    { timeout: 5000 },
+                    { timeout: 2000 }, // Short 2-second timeout
                     buttonSelector,
                     !initialState
                 );
             } catch (e) {
-                addLog(`  - Note: State did not change for "${text}" after click. This may be expected.`);
+                addLog(`  - Note: State for "${text}" did not visually change after click.`);
             }
         }
         
@@ -153,20 +154,16 @@ const runScraper = async (jobId) => {
             const combinationName = `${target.itemType} ${target.propName} ${petTitle}${target.age ? ', Age: ' + target.age : ''}`;
             addLog(`Setting state for: "${combinationName}"`);
 
-            // 1. SET STATE
             if (!(await getButtonState(target.itemType))) await clickButtonByText(target.itemType);
             if (await getButtonState('Flyable') !== target.properties.flyable) await clickButtonByText('Flyable');
             if (await getButtonState('Rideable') !== target.properties.rideable) await clickButtonByText('Rideable');
             if (target.age && !(await getButtonState(target.age))) await clickButtonByText(target.age);
 
-            // 2. CONFIRM STATE
-            addLog(`  - Confirming state...`);
             const isItemTypeCorrect = await getButtonState(target.itemType);
             const isFlyableCorrect = await getButtonState('Flyable') === target.properties.flyable;
             const isRideableCorrect = await getButtonState('Rideable') === target.properties.rideable;
             const isAgeCorrect = target.age ? await getButtonState(target.age) : true;
             
-            // 3. RECORD ID
             if (isItemTypeCorrect && isFlyableCorrect && isRideableCorrect && isAgeCorrect) {
                 const id = page.url().split('/').pop();
                 addLog(`  - State confirmed. ID: ${id}`);
