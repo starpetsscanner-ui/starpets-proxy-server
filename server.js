@@ -71,11 +71,12 @@ app.post('/api/search-pet', async (req, res) => {
         console.log('Pet sales page loaded. Verifying pet name...');
         await page.waitForSelector(petNameHeaderSelector, { timeout: 15000 });
         const finalPetName = await page.$eval(petNameHeaderSelector, el => el.textContent);
+        const finalUrl = page.url(); // Get the URL of the current page
 
-        console.log(`Verification complete. Found name: "${finalPetName}"`);
+        console.log(`Verification complete. Found name: "${finalPetName}" at URL: ${finalUrl}`);
         res.status(200).json({ 
             success: true, 
-            message: `Successfully navigated to the page for: ${finalPetName}` 
+            message: `Verification successful. Landed on URL: ${finalUrl}` 
         });
 
     } catch (error) {
