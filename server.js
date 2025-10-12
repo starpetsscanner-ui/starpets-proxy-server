@@ -40,7 +40,7 @@ app.get('/api/check-status/:jobId', (req, res) => {
     }
     res.status(200).json(job);
     if (job.status === 'COMPLETED' || job.status === 'FAILED') {
-        setTimeout(() => delete jobs[jobId], 60000);
+        setTimeout(() => delete jobs[jobId], 60000); // Clean up after 1 minute
     }
 });
 
@@ -87,39 +87,36 @@ const runScraper = async (jobId) => {
         
         const petTitle = await page.$eval('h1[class*="_name_"]', el => el.textContent.trim());
 
-        const currentState = { flyable: false, rideable: false };
-
+        // **REFINED STATE MANAGEMENT AND CLICKING LOGIC**
         async function getButtonState(propName) {
             const buttonSelector = `//a[.//p[normalize-space()="${propName}"]]`;
             const [button] = await page.$x(buttonSelector);
-            if(!button) return false;
+            if (!button) return false;
             return await button.evaluate(node => node.querySelector('div[class*="_selected_"]') !== null);
         }
-        
-        async function clickOption(optionText, isProperty = false) {
-             const buttonSelector = `//a[.//p[normalize-space()="${optionText}"]]`;
-             const [button] = await page.$x(buttonSelector);
-             if(!button) {
-                 addLog(`  - Button "${optionText}" not found.`, true);
-                 return false;
-             }
-             if (isProperty) {
-                const isSelected = await getButtonState(optionText);
-                if ( (optionText === 'Flyable' && currentState.flyable === isSelected) || (optionText === 'Rideable' && currentState.rideable === isSelected) ) {
-                    // No change needed
-                } else {
-                    addLog(`  - Toggling "${optionText}"...`);
-                    await button.click();
-                    await page.waitForTimeout(500); // Give page time to react
-                    if(optionText === 'Flyable') currentState.flyable = !currentState.flyable;
-                    if(optionText === 'Rideable') currentState.rideable = !currentState.rideable;
-                }
-             } else {
-                 addLog(`  - Clicking "${optionText}"...`);
-                 await button.click();
-                 await page.waitForTimeout(500); // Give page time to react
-             }
-             return true;
+
+        async function clickButtonByText(text) {
+            const buttonSelector = `//a[.//p[normalize-space()="${text}"]]`;
+            const [button] = await page.$x(buttonSelector);
+            if (!button) {
+                addLog(`  - WARN: Button "${text}" not found.`, false);
+                return;
+            }
+            await button.click();
+            await page.waitForTimeout(400); // Crucial short delay for UI to update
+        }
+
+        async function setProperties(targetState) {
+            const currentFlyable = await getButtonState('Flyable');
+            if (currentFlyable !== targetState.flyable) {
+                addLog(`  - Setting Flyable to ${targetState.flyable}`);
+                await clickButtonByText('Flyable');
+            }
+            const currentRideable = await getButtonState('Rideable');
+            if (currentRideable !== targetState.rideable) {
+                addLog(`  - Setting Rideable to ${targetState.rideable}`);
+                await clickButtonByText('Rideable');
+            }
         }
 
         const itemTypes = ['Ordinary', 'Neon', 'Mega Neon'];
@@ -131,32 +128,22 @@ const runScraper = async (jobId) => {
         };
         const ordinaryAges = ['Newborn', 'Junior', 'Pre-Teen', 'Teen', 'Post-Teen', 'Full Grown'];
         const neonAges = ['Reborn', 'Twinkle', 'Sparkle', 'Flare', 'Sunshine', 'Luminous'];
-        
-        // Get initial state from the page
-        currentState.flyable = await getButtonState('Flyable');
-        currentState.rideable = await getButtonState('Rideable');
-        addLog(`Initial page state: Flyable=${currentState.flyable}, Rideable=${currentState.rideable}`);
 
         for (const itemType of itemTypes) {
             addLog(`Processing Item Type: ${itemType}`);
-            await clickOption(itemType, false);
+            await clickButtonByText(itemType);
 
             for (const propName in properties) {
                 addLog(`  Processing Property: ${propName}`);
-                const targetState = properties[propName];
-
-                // Set properties to the correct state for this combination
-                if (currentState.flyable !== targetState.flyable) await clickOption('Flyable', true);
-                if (currentState.rideable !== targetState.rideable) await clickOption('Rideable', true);
+                await setProperties(properties[propName]);
                 
                 const ages = itemType === 'Ordinary' ? ordinaryAges : (itemType === 'Neon' ? neonAges : []);
                 if (ages.length > 0) {
                     for (const age of ages) {
-                        if (await clickOption(age, false)) {
-                            const id = page.url().split('/').pop();
-                            const combination = `${itemType} ${propName} ${petTitle}, Age: ${age}`;
-                            addData({ combination, id });
-                        }
+                        await clickButtonByText(age);
+                        const id = page.url().split('/').pop();
+                        const combination = `${itemType} ${propName} ${petTitle}, Age: ${age}`;
+                        addData({ combination, id });
                     }
                 } else { // Mega Neon
                     const id = page.url().split('/').pop();
