@@ -54,7 +54,7 @@ app.post('/api/search-pet', async (req, res) => {
     }
 });
 
-// **NEW:** Endpoint for collecting all 52 IDs
+// Endpoint for collecting all 52 IDs
 app.post('/api/collect-pet-ids', async (req, res) => {
     const { petName } = req.body;
     console.log(`Starting full ID collection for: "${petName}"`);
@@ -89,10 +89,8 @@ app.post('/api/collect-pet-ids', async (req, res) => {
         const collectedData = [];
 
         async function selectOptionAndGetId(optionText) {
-            console.log(`  - Clicking: ${optionText}`);
+            console.log(`  - Processing: ${optionText}`);
             const initialUrl = page.url();
-            
-            // **THE FIX:** This new XPath selector targets the <a> link based on the <p> text inside it, ignoring whitespace.
             const buttonSelector = `//a[.//p[normalize-space()="${optionText}"]]`;
             
             const [button] = await page.$x(buttonSelector);
@@ -100,11 +98,21 @@ app.post('/api/collect-pet-ids', async (req, res) => {
                 console.log(`    - Warning: Button "${optionText}" not found. Skipping.`);
                 return null;
             }
+
+            // **THE FIX: Check if the button is already selected before clicking.**
+            const isSelected = await button.evaluate(node => node.querySelector('div[class*="_selected_"]') !== null);
+
+            if (isSelected) {
+                console.log(`    - "${optionText}" is already selected. Recording current ID.`);
+                return initialUrl.split('/').pop();
+            }
+
+            console.log(`    - Clicking "${optionText}"...`);
             await button.click();
             try {
-                await page.waitForFunction(url => window.location.href !== url, { timeout: 5000 }, initialUrl);
+                await page.waitForFunction(url => window.location.href !== url, { timeout: 10000 }, initialUrl);
             } catch (e) {
-                console.log(`    - URL did not change for "${optionText}". It might be the default or already selected.`);
+                console.log(`    - URL did not change after click. This may be expected.`);
             }
             const newUrl = page.url();
             return newUrl.split('/').pop();
@@ -119,28 +127,30 @@ app.post('/api/collect-pet-ids', async (req, res) => {
         };
         const ordinaryAges = ['Newborn', 'Junior', 'Pre-Teen', 'Teen', 'Post-Teen', 'Full Grown'];
         const neonAges = ['Reborn', 'Twinkle', 'Sparkle', 'Flare', 'Sunshine', 'Luminous'];
-
+        
+        // This logic needs to be more careful about deselecting
         for (const itemType of itemTypes) {
-            await selectOptionAndGetId(itemType);
-            for (const propName in properties) {
+             await selectOptionAndGetId(itemType);
+             for (const propName in properties) {
                 const propsToClick = properties[propName];
-                for (const prop of propsToClick) await selectOptionAndGetId(prop);
+                for(const prop of propsToClick) await selectOptionAndGetId(prop);
 
                 const ages = itemType === 'Ordinary' ? ordinaryAges : (itemType === 'Neon' ? neonAges : []);
                 if (ages.length > 0) {
                     for (const age of ages) {
                         const id = await selectOptionAndGetId(age);
                         const combination = `${itemType} ${propName} ${petTitle}, Age: ${age}`;
-                        if (id) collectedData.push({ combination, id });
-                        await selectOptionAndGetId(age); // De-select age
+                        if(id) collectedData.push({ combination, id });
                     }
-                } else {
+                } else { // Mega Neon has no ages
                     const id = page.url().split('/').pop();
                     const combination = `${itemType} ${propName} ${petTitle}`;
-                    if (id) collectedData.push({ combination, id });
+                    if(id) collectedData.push({ combination, id });
                 }
-                for (const prop of propsToClick.slice().reverse()) await selectOptionAndGetId(prop); // De-select properties
-            }
+
+                // Deselect properties by clicking them again
+                for (const prop of propsToClick.slice().reverse()) await selectOptionAndGetId(prop);
+             }
         }
         
         console.log(`Collection complete. Found ${collectedData.length} combinations.`);
@@ -153,7 +163,6 @@ app.post('/api/collect-pet-ids', async (req, res) => {
         if (browser) await browser.close();
     }
 });
-
 
 app.listen(PORT, () => {
     console.log(`Server is running on http://localhost:${PORT}`);
