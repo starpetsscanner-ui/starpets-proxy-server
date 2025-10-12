@@ -91,7 +91,10 @@ app.post('/api/collect-pet-ids', async (req, res) => {
         async function selectOptionAndGetId(optionText) {
             console.log(`  - Clicking: ${optionText}`);
             const initialUrl = page.url();
-            const buttonSelector = `//div[contains(@class, "_tagContent_")]/div[normalize-space()="${optionText}"]`;
+            
+            // **THE FIX:** This new XPath selector targets the <a> link based on the <p> text inside it, ignoring whitespace.
+            const buttonSelector = `//a[.//p[normalize-space()="${optionText}"]]`;
+            
             const [button] = await page.$x(buttonSelector);
             if (!button) {
                 console.log(`    - Warning: Button "${optionText}" not found. Skipping.`);
