@@ -12,6 +12,11 @@ const PORT = process.env.PORT || 3000;
 app.use(cors());
 app.use(express.json());
 
+// **NEW:** A simple endpoint to wake up the server on Render.
+app.get('/health', (req, res) => {
+    res.status(200).json({ status: 'Server is awake.' });
+});
+
 app.post('/api/collect-pet-ids-stream', (req, res) => {
     const { petName } = req.body;
 
@@ -148,3 +153,5 @@ app.post('/api/collect-pet-ids-stream', (req, res) => {
 app.listen(PORT, () => {
     console.log(`Server is running on http://localhost:${PORT}`);
 });
+
+
