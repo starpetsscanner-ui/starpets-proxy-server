@@ -10,12 +10,11 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 
 app.use(cors());
-app.use(express.json()); // Middleware to parse JSON bodies
+app.use(express.json());
 
-// New endpoint to search for a specific pet
 app.post('/api/search-pet', async (req, res) => {
     const { petName } = req.body;
-    console.log(`Received request to search for pet: "${petName}"`);
+    console.log(`Received request to find and verify page for: "${petName}"`);
     
     if (!petName) {
         return res.status(400).json({ success: false, message: 'Pet name is required.' });
@@ -24,6 +23,10 @@ app.post('/api/search-pet', async (req, res) => {
     let browser = null;
     const starPetsUrl = 'https://starpets.pw/';
     const searchBarSelector = 'input[placeholder="Quick search"]';
+    // This is a selector for the h1 tag on the final pet page. 
+    // We use a partial class match `[class*="_name_"]` because the full class name is dynamic.
+    const petNameHeaderSelector = 'h1[class*="_name_"]';
+
 
     try {
         console.log('Launching browser...');
@@ -42,31 +45,49 @@ app.post('/api/search-pet', async (req, res) => {
             ignoreHTTPSErrors: true,
         });
 
-        console.log('Browser launched. Navigating to page...');
         const page = await browser.newPage();
         await page.goto(starPetsUrl, { waitUntil: 'networkidle2', timeout: 90000 });
         
-        console.log('Page loaded. Finding the search bar...');
-        await page.waitForSelector(searchBarSelector, { timeout: 30000 });
-        console.log('Search bar found. Typing pet name...');
-
-        // Type the pet name into the search bar and press Enter
+        console.log('Page loaded. Finding search bar and typing pet name...');
         await page.type(searchBarSelector, petName);
-        await page.keyboard.press('Enter');
         
-        console.log(`Successfully searched for "${petName}".`);
+        console.log('Pressing Enter and waiting for search results page to load...');
+        // We wait for the navigation to the search results page to complete
+        await Promise.all([
+            page.waitForNavigation({ waitUntil: 'networkidle2' }),
+            page.keyboard.press('Enter'),
+        ]);
         
-        // For now, we just confirm the action was completed.
-        // In the next step, we'll capture the results after this navigation.
-        res.status(200).json({ success: true, message: `Successfully initiated search for "${petName}".` });
+        console.log('Search results page loaded. Finding link for the pet...');
+        // We'll use an XPath selector to find the first link that contains the pet's name.
+        // This is more robust than relying on dynamic class names.
+        const petLinkSelector = `//a[contains(., "${petName}")]`;
+        const [petLink] = await page.$x(petLinkSelector);
+
+        if (!petLink) {
+            throw new Error(`Could not find a link for "${petName}" on the search results page.`);
+        }
+        
+        console.log('Pet link found. Clicking and waiting for the pet sales page...');
+        await Promise.all([
+            page.waitForNavigation({ waitUntil: 'networkidle2' }),
+            petLink.click(),
+        ]);
+
+        console.log('Pet sales page loaded. Verifying pet name...');
+        // Wait for the h1 header to be visible on the page
+        await page.waitForSelector(petNameHeaderSelector, { timeout: 15000 });
+        const finalPetName = await page.$eval(petNameHeaderSelector, el => el.textContent);
+
+        console.log(`Verification complete. Found name: "${finalPetName}"`);
+        res.status(200).json({ 
+            success: true, 
+            message: `Successfully navigated to the page for: ${finalPetName}` 
+        });
 
     } catch (error) {
-        console.error('An error occurred during the search operation:', error);
-        if (error.name === 'TimeoutError') {
-             res.status(500).json({ success: false, message: `Could not find the search bar to perform the search.` });
-        } else {
-             res.status(500).json({ success: false, message: 'An unknown server error occurred.', error: error.message });
-        }
+        console.error('An error occurred during the search and navigation process:', error);
+        res.status(500).json({ success: false, message: error.message });
     } finally {
         if (browser) {
             console.log('Closing browser.');
@@ -78,3 +99,4 @@ app.post('/api/search-pet', async (req, res) => {
 app.listen(PORT, () => {
     console.log(`Server is running on http://localhost:${PORT}`);
 });
+
