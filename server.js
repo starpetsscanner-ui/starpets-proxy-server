@@ -63,7 +63,7 @@ const runScraper = async (jobId) => {
             executablePath: await chromium.executablePath(),
             headless: chromium.headless,
             args: [...chromium.args, '--no-sandbox', '--disable-setuid-sandbox', '--single-process'],
-            protocolTimeout: 240000, // **NEW:** Increase timeout to 4 minutes to prevent crash
+            protocolTimeout: 300000, // Increased to 5 minutes for stability
         });
         addLog('Browser launched.');
 
@@ -105,10 +105,10 @@ const runScraper = async (jobId) => {
                 return;
             }
             
-            const initialState = await getButtonState(text);
+            const initialState = await button.evaluate(node => node.querySelector('div[class*="_selected_"]') !== null);
             await button.click();
 
-            // Actively wait for the button's visual state to change. This is much faster than waiting for URL.
+            // Actively wait for the button's visual state to change. This is much faster.
             try {
                 await page.waitForFunction(
                     (selector, expectedState) => {
@@ -117,12 +117,12 @@ const runScraper = async (jobId) => {
                         const isSelected = element.querySelector('div[class*="_selected_"]') !== null;
                         return isSelected === expectedState;
                     },
-                    { timeout: 2000 }, // Short 2-second timeout
+                    { timeout: 3000 }, // Short 3-second timeout for the class change
                     buttonSelector,
                     !initialState
                 );
             } catch (e) {
-                addLog(`  - Note: State for "${text}" did not visually change after click.`);
+                addLog(`  - Note: Visual state for "${text}" did not change as expected.`);
             }
         }
         
