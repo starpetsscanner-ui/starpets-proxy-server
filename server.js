@@ -63,7 +63,7 @@ const runScraper = async (jobId) => {
             executablePath: await chromium.executablePath(),
             headless: chromium.headless,
             args: [...chromium.args, '--no-sandbox', '--disable-setuid-sandbox', '--single-process'],
-            protocolTimeout: 300000, // Increased to 5 minutes for stability
+            protocolTimeout: 300000,
         });
         addLog('Browser launched.');
 
@@ -88,7 +88,7 @@ const runScraper = async (jobId) => {
         
         const petTitle = await page.$eval('h1[class*="_name_"]', el => el.textContent.trim());
 
-        // --- **NEW** High-Speed "Click and Watch" Logic ---
+        // --- Streamlined "Click and Confirm" Logic ---
         
         async function getButtonState(propName) {
             const buttonSelector = `//a[.//p[normalize-space()="${propName}"]]`;
@@ -104,26 +104,9 @@ const runScraper = async (jobId) => {
                 addLog(`  - WARN: Button "${text}" not found.`, false);
                 return;
             }
-            
-            const initialState = await button.evaluate(node => node.querySelector('div[class*="_selected_"]') !== null);
             await button.click();
-
-            // Actively wait for the button's visual state to change. This is much faster.
-            try {
-                await page.waitForFunction(
-                    (selector, expectedState) => {
-                        const element = document.evaluate(selector, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null).singleNodeValue;
-                        if (!element) return false;
-                        const isSelected = element.querySelector('div[class*="_selected_"]') !== null;
-                        return isSelected === expectedState;
-                    },
-                    { timeout: 3000 }, // Short 3-second timeout for the class change
-                    buttonSelector,
-                    !initialState
-                );
-            } catch (e) {
-                addLog(`  - Note: Visual state for "${text}" did not change as expected.`);
-            }
+            // A short, simple delay is more reliable than complex watchers.
+            await page.waitForTimeout(500); 
         }
         
         const allCombinations = [];
@@ -154,16 +137,20 @@ const runScraper = async (jobId) => {
             const combinationName = `${target.itemType} ${target.propName} ${petTitle}${target.age ? ', Age: ' + target.age : ''}`;
             addLog(`Setting state for: "${combinationName}"`);
 
+            // 1. SET STATE
             if (!(await getButtonState(target.itemType))) await clickButtonByText(target.itemType);
             if (await getButtonState('Flyable') !== target.properties.flyable) await clickButtonByText('Flyable');
             if (await getButtonState('Rideable') !== target.properties.rideable) await clickButtonByText('Rideable');
             if (target.age && !(await getButtonState(target.age))) await clickButtonByText(target.age);
 
+            // 2. CONFIRM STATE
+            addLog(`  - Confirming state...`);
             const isItemTypeCorrect = await getButtonState(target.itemType);
             const isFlyableCorrect = await getButtonState('Flyable') === target.properties.flyable;
             const isRideableCorrect = await getButtonState('Rideable') === target.properties.rideable;
             const isAgeCorrect = target.age ? await getButtonState(target.age) : true;
             
+            // 3. RECORD ID
             if (isItemTypeCorrect && isFlyableCorrect && isRideableCorrect && isAgeCorrect) {
                 const id = page.url().split('/').pop();
                 addLog(`  - State confirmed. ID: ${id}`);
