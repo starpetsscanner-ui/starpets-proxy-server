@@ -40,7 +40,6 @@ app.get('/api/check-status/:jobId', (req, res) => {
     }
 });
 
-// --- **NEW** "State-Driven" Scraper Logic ---
 const runScraper = async (jobId, petName) => {
     const job = jobs[jobId];
     const addLog = (message, isError = false) => {
@@ -89,7 +88,8 @@ const runScraper = async (jobId, petName) => {
             if (!button) return null;
             return await button.evaluate(node => node.querySelector('div[class*="_selected_"]') !== null);
         }
-
+        
+        // **NEW, FASTER CLICK LOGIC**
         async function clickButtonByText(text) {
             const selector = `//a[.//p[normalize-space()="${text}"]]`;
             const [button] = await page.$x(selector);
@@ -97,11 +97,18 @@ const runScraper = async (jobId, petName) => {
                 addLog(`  - WARN: Button "${text}" not found.`, true);
                 return;
             }
+            const initialUrl = page.url();
             await button.click();
-            // Wait for the page to become stable after the click
-            await page.waitForNetworkIdle({ idleTime: 250, timeout: 5000 }).catch(() => {
-                addLog(`  - Note: Network did not idle for "${text}". Continuing.`);
-            });
+            // Actively wait for the URL to change, which is much faster than waiting for network idle.
+            try {
+                await page.waitForFunction(
+                    (url) => window.location.href !== url,
+                    { timeout: 5000 },
+                    initialUrl
+                );
+            } catch (e) {
+                addLog(`  - Note: URL did not change for "${text}".`);
+            }
         }
         
         const allCombinations = [];
@@ -132,34 +139,23 @@ const runScraper = async (jobId, petName) => {
             const combinationName = `${target.itemType} ${target.propName} ${petTitle}${target.age ? ', Age: ' + target.age : ''}`;
             addLog(`Setting state for: "${combinationName}"`);
 
-            // 1. SET STATE
             if (await getButtonState(target.itemType) === false) await clickButtonByText(target.itemType);
             if (await getButtonState('Flyable') !== target.properties.flyable) await clickButtonByText('Flyable');
             if (await getButtonState('Rideable') !== target.properties.rideable) await clickButtonByText('Rideable');
             if (target.age && await getButtonState(target.age) === false) await clickButtonByText(target.age);
 
-            // 2. CONFIRM STATE
             addLog(`  - Confirming state...`);
             const isItemTypeCorrect = await getButtonState(target.itemType);
             const isFlyableCorrect = await getButtonState('Flyable') === target.properties.flyable;
             const isRideableCorrect = await getButtonState('Rideable') === target.properties.rideable;
             const isAgeCorrect = target.age ? await getButtonState(target.age) : true;
             
-            // 3. RECORD ID
             if (isItemTypeCorrect && isFlyableCorrect && isRideableCorrect && isAgeCorrect) {
                 const id = page.url().split('/').pop();
                 addLog(`  - State confirmed. ID: ${id}`);
                 addData({ combination: combinationName, id });
             } else {
-                addLog(`  - ERROR: State confirmation failed. Retrying once...`);
-                // Simple retry logic
-                if (await getButtonState(target.itemType) === false) await clickButtonByText(target.itemType);
-                if (await getButtonState('Flyable') !== target.properties.flyable) await clickButtonByText('Flyable');
-                if (await getButtonState('Rideable') !== target.properties.rideable) await clickButtonByText('Rideable');
-                if (target.age && await getButtonState(target.age) === false) await clickButtonByText(target.age);
-                const id = page.url().split('/').pop();
-                addLog(`  - Re-confirmed state. ID: ${id}`);
-                addData({ combination: combinationName, id });
+                addLog(`  - ERROR: State confirmation failed for "${combinationName}".`, true);
             }
         }
 
