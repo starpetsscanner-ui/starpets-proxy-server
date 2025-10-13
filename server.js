@@ -68,7 +68,7 @@ const runScraper = async (jobId, petName) => {
         addLog(`Searching for "${petName}"...`);
         await page.type('input[placeholder="Quick search"]', petName);
         await page.keyboard.press('Enter');
-        await page.waitForXPath(`//a[contains(., "${petName}")]`, { timeout: 30000 });
+        await page.waitForXPath(`//a[contains(., "${petName}")]`, { timeout: 10000 });
         
         addLog('Clicking pet link...');
         const [petLink] = await page.$x(`//a[contains(., "${petName}")]`);
@@ -76,7 +76,7 @@ const runScraper = async (jobId, petName) => {
         
         await Promise.all([
             petLink.click(),
-            page.waitForSelector('h1[class*="_name_"]', { timeout: 30000 })
+            page.waitForSelector('h1[class*="_name_"]', { timeout: 10000 })
         ]);
         addLog('On sales page. Starting collection...');
         
