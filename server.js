@@ -1,6 +1,7 @@
+
 const express = require('express');
 const cors = require('cors');
-const puppeteer =require('puppeteer-extra');
+const puppeteer = require('puppeteer-extra');
 const StealthPlugin = require('puppeteer-extra-plugin-stealth');
 const chromium = require('@sparticuz/chromium');
 const { v4: uuidv4 } = require('uuid');
@@ -81,6 +82,8 @@ const runScraper = async (jobId, petName) => {
         addLog('On sales page. Starting collection...');
         
         const petTitle = await page.$eval('h1[class*="_name_"]', el => el.textContent.trim());
+
+        // --- **NEW** High-Speed "Set and Fire" Logic ---
         
         async function getButtonState(text) {
             const selector = `//a[.//p[normalize-space()="${text}"]]`;
@@ -96,29 +99,22 @@ const runScraper = async (jobId, petName) => {
                 addLog(`  - WARN: Button "${text}" not found.`, true);
                 return;
             }
-            
-            const initialState = await button.evaluate(node => node.querySelector('div[class*="_selected_"]') !== null);
             await button.click();
+            // This short, fixed delay replaces all slow, complex waiting logic.
+            await page.waitForTimeout(400); 
+        }
 
-            // **THE FIX:** Actively wait for the button's visual state to change. This is fast and reliable.
-            try {
-                await page.waitForFunction(
-                    (selector, expectedState) => {
-                        const element = document.evaluate(selector, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null).singleNodeValue;
-                        if (!element) return false; // Button might disappear briefly during re-render
-                        const isSelected = element.querySelector('div[class*="_selected_"]') !== null;
-                        return isSelected === expectedState;
-                    },
-                    { timeout: 3000 }, // Short timeout, as this should be fast
-                    selector,
-                    !initialState
-                );
-            } catch (e) {
-                addLog(`  - Note: Visual state for "${text}" did not change as expected.`);
+        async function setProperties(targetState) {
+            if (await getButtonState('Flyable') !== targetState.flyable) {
+                addLog(`  - Setting Flyable to ${targetState.flyable}`);
+                await clickButtonByText('Flyable');
+            }
+            if (await getButtonState('Rideable') !== targetState.rideable) {
+                addLog(`  - Setting Rideable to ${targetState.rideable}`);
+                await clickButtonByText('Rideable');
             }
         }
         
-        const allCombinations = [];
         const itemTypes = ['Ordinary', 'Neon', 'Mega Neon'];
         const properties = {
             'Base': { flyable: false, rideable: false },
@@ -129,40 +125,27 @@ const runScraper = async (jobId, petName) => {
         const ordinaryAges = ['Newborn', 'Junior', 'Pre-Teen', 'Teen', 'Post-Teen', 'Full Grown'];
         const neonAges = ['Reborn', 'Twinkle', 'Sparkle', 'Flare', 'Sunshine', 'Luminous'];
 
-        itemTypes.forEach(itemType => {
+        for (const itemType of itemTypes) {
+            addLog(`Processing Item Type: ${itemType}`);
+            await clickButtonByText(itemType);
+
             for (const propName in properties) {
+                addLog(`  Processing Property: ${propName}`);
+                await setProperties(properties[propName]);
+                
                 const ages = itemType === 'Ordinary' ? ordinaryAges : (itemType === 'Neon' ? neonAges : []);
                 if (ages.length > 0) {
-                    ages.forEach(age => {
-                        allCombinations.push({ itemType, propName, properties: properties[propName], age });
-                    });
-                } else {
-                    allCombinations.push({ itemType, propName, properties: properties[propName], age: null });
+                    for (const age of ages) {
+                        await clickButtonByText(age);
+                        const id = page.url().split('/').pop();
+                        const combination = `${itemType} ${propName} ${petTitle}, Age: ${age}`;
+                        addData({ combination, id });
+                    }
+                } else { // Mega Neon
+                    const id = page.url().split('/').pop();
+                    const combination = `${itemType} ${propName} ${petTitle}`;
+                    addData({ combination, id });
                 }
-            }
-        });
-
-        for (const target of allCombinations) {
-            const combinationName = `${target.itemType} ${target.propName} ${petTitle}${target.age ? ', Age: ' + target.age : ''}`;
-            addLog(`Setting state for: "${combinationName}"`);
-
-            if (await getButtonState(target.itemType) === false) await clickButtonByText(target.itemType);
-            if (await getButtonState('Flyable') !== target.properties.flyable) await clickButtonByText('Flyable');
-            if (await getButtonState('Rideable') !== target.properties.rideable) await clickButtonByText('Rideable');
-            if (target.age && await getButtonState(target.age) === false) await clickButtonByText(target.age);
-
-            addLog(`  - Confirming state...`);
-            const isItemTypeCorrect = await getButtonState(target.itemType);
-            const isFlyableCorrect = await getButtonState('Flyable') === target.properties.flyable;
-            const isRideableCorrect = await getButtonState('Rideable') === target.properties.rideable;
-            const isAgeCorrect = target.age ? await getButtonState(target.age) : true;
-            
-            if (isItemTypeCorrect && isFlyableCorrect && isRideableCorrect && isAgeCorrect) {
-                const id = page.url().split('/').pop();
-                addLog(`  - State confirmed. ID: ${id}`);
-                addData({ combination: combinationName, id });
-            } else {
-                addLog(`  - ERROR: State confirmation failed for "${combinationName}".`, true);
             }
         }
 
