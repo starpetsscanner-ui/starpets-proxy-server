@@ -1,6 +1,6 @@
 const express = require('express');
 const cors = require('cors');
-const puppeteer = require('puppeteer-extra');
+const puppeteer =require('puppeteer-extra');
 const StealthPlugin = require('puppeteer-extra-plugin-stealth');
 const chromium = require('@sparticuz/chromium');
 const { v4: uuidv4 } = require('uuid');
@@ -81,15 +81,14 @@ const runScraper = async (jobId, petName) => {
         addLog('On sales page. Starting collection...');
         
         const petTitle = await page.$eval('h1[class*="_name_"]', el => el.textContent.trim());
-
+        
         async function getButtonState(text) {
             const selector = `//a[.//p[normalize-space()="${text}"]]`;
             const [button] = await page.$x(selector);
             if (!button) return null;
             return await button.evaluate(node => node.querySelector('div[class*="_selected_"]') !== null);
         }
-        
-        // **NEW, FASTER CLICK LOGIC**
+
         async function clickButtonByText(text) {
             const selector = `//a[.//p[normalize-space()="${text}"]]`;
             const [button] = await page.$x(selector);
@@ -97,17 +96,25 @@ const runScraper = async (jobId, petName) => {
                 addLog(`  - WARN: Button "${text}" not found.`, true);
                 return;
             }
-            const initialUrl = page.url();
+            
+            const initialState = await button.evaluate(node => node.querySelector('div[class*="_selected_"]') !== null);
             await button.click();
-            // Actively wait for the URL to change, which is much faster than waiting for network idle.
+
+            // **THE FIX:** Actively wait for the button's visual state to change. This is fast and reliable.
             try {
                 await page.waitForFunction(
-                    (url) => window.location.href !== url,
-                    { timeout: 5000 },
-                    initialUrl
+                    (selector, expectedState) => {
+                        const element = document.evaluate(selector, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null).singleNodeValue;
+                        if (!element) return false; // Button might disappear briefly during re-render
+                        const isSelected = element.querySelector('div[class*="_selected_"]') !== null;
+                        return isSelected === expectedState;
+                    },
+                    { timeout: 3000 }, // Short timeout, as this should be fast
+                    selector,
+                    !initialState
                 );
             } catch (e) {
-                addLog(`  - Note: URL did not change for "${text}".`);
+                addLog(`  - Note: Visual state for "${text}" did not change as expected.`);
             }
         }
         
