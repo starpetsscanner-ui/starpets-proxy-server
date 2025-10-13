@@ -15,7 +15,6 @@ app.use(express.json());
 
 const jobs = {};
 
-// --- API Endpoints (Job Polling System) ---
 app.get('/health', (req, res) => {
     res.status(200).json({ status: 'Server is awake.' });
 });
@@ -26,7 +25,7 @@ app.post('/api/start-collection', (req, res) => {
     jobs[jobId] = {
         status: 'PENDING',
         logs: [`Job created for "${petName}".`],
-        data: null, // Will hold the final map of IDs
+        data: [],
     };
     runScraper(jobId, petName);
     res.status(202).json({ jobId });
@@ -37,11 +36,11 @@ app.get('/api/check-status/:jobId', (req, res) => {
     if (!job) return res.status(404).json({ message: 'Job not found.' });
     res.status(200).json(job);
     if (job.status === 'COMPLETED' || job.status === 'FAILED') {
-        setTimeout(() => delete jobs[req.params.jobId], 60000);
+        setTimeout(() => delete jobs[req.params.jobId], 120000);
     }
 });
 
-// --- **NEW** "Scrape, Don't Click" Scraper Logic ---
+// --- **NEW** "State-Driven" Scraper Logic ---
 const runScraper = async (jobId, petName) => {
     const job = jobs[jobId];
     const addLog = (message, isError = false) => {
@@ -49,6 +48,7 @@ const runScraper = async (jobId, petName) => {
         job.logs.push(message);
         if (isError) job.status = 'FAILED';
     };
+    const addData = (item) => job.data.push(item);
 
     let browser = null;
     try {
@@ -58,6 +58,7 @@ const runScraper = async (jobId, petName) => {
             executablePath: await chromium.executablePath(),
             headless: chromium.headless,
             args: [...chromium.args, '--no-sandbox', '--disable-setuid-sandbox', '--single-process'],
+            protocolTimeout: 300000,
         });
         addLog('Browser launched.');
 
@@ -78,35 +79,91 @@ const runScraper = async (jobId, petName) => {
             petLink.click(),
             page.waitForSelector('h1[class*="_name_"]', { timeout: 30000 })
         ]);
-        addLog('On sales page. Scraping all variant links at once...');
+        addLog('On sales page. Starting collection...');
+        
+        const petTitle = await page.$eval('h1[class*="_name_"]', el => el.textContent.trim());
 
-        // This is the core of the new strategy.
-        // We run a script inside the browser to grab all the data we need in one go.
-        const attributeIdMap = await page.evaluate(() => {
-            const idMap = {};
-            // Select all link elements within the attribute containers
-            const links = document.querySelectorAll('div[class*="_tagContent_"] a');
-            
-            links.forEach(link => {
-                const textElement = link.querySelector('p');
-                if (textElement) {
-                    const attributeName = textElement.textContent.trim();
-                    const href = link.getAttribute('href');
-                    if (attributeName && href) {
-                        const id = href.split('/').pop();
-                        idMap[attributeName] = id;
-                    }
-                }
-            });
-            return idMap;
-        });
-
-        if (Object.keys(attributeIdMap).length === 0) {
-            throw new Error('Could not scrape any attribute IDs from the page.');
+        async function getButtonState(text) {
+            const selector = `//a[.//p[normalize-space()="${text}"]]`;
+            const [button] = await page.$x(selector);
+            if (!button) return null;
+            return await button.evaluate(node => node.querySelector('div[class*="_selected_"]') !== null);
         }
 
-        addLog(`Successfully scraped ${Object.keys(attributeIdMap).length} unique attribute IDs.`);
-        job.data = attributeIdMap;
+        async function clickButtonByText(text) {
+            const selector = `//a[.//p[normalize-space()="${text}"]]`;
+            const [button] = await page.$x(selector);
+            if (!button) {
+                addLog(`  - WARN: Button "${text}" not found.`, true);
+                return;
+            }
+            await button.click();
+            // Wait for the page to become stable after the click
+            await page.waitForNetworkIdle({ idleTime: 250, timeout: 5000 }).catch(() => {
+                addLog(`  - Note: Network did not idle for "${text}". Continuing.`);
+            });
+        }
+        
+        const allCombinations = [];
+        const itemTypes = ['Ordinary', 'Neon', 'Mega Neon'];
+        const properties = {
+            'Base': { flyable: false, rideable: false },
+            'Flyable (F)': { flyable: true, rideable: false },
+            'Rideable (R)': { flyable: false, rideable: true },
+            'Flyable & Rideable (FR)': { flyable: true, rideable: true }
+        };
+        const ordinaryAges = ['Newborn', 'Junior', 'Pre-Teen', 'Teen', 'Post-Teen', 'Full Grown'];
+        const neonAges = ['Reborn', 'Twinkle', 'Sparkle', 'Flare', 'Sunshine', 'Luminous'];
+
+        itemTypes.forEach(itemType => {
+            for (const propName in properties) {
+                const ages = itemType === 'Ordinary' ? ordinaryAges : (itemType === 'Neon' ? neonAges : []);
+                if (ages.length > 0) {
+                    ages.forEach(age => {
+                        allCombinations.push({ itemType, propName, properties: properties[propName], age });
+                    });
+                } else {
+                    allCombinations.push({ itemType, propName, properties: properties[propName], age: null });
+                }
+            }
+        });
+
+        for (const target of allCombinations) {
+            const combinationName = `${target.itemType} ${target.propName} ${petTitle}${target.age ? ', Age: ' + target.age : ''}`;
+            addLog(`Setting state for: "${combinationName}"`);
+
+            // 1. SET STATE
+            if (await getButtonState(target.itemType) === false) await clickButtonByText(target.itemType);
+            if (await getButtonState('Flyable') !== target.properties.flyable) await clickButtonByText('Flyable');
+            if (await getButtonState('Rideable') !== target.properties.rideable) await clickButtonByText('Rideable');
+            if (target.age && await getButtonState(target.age) === false) await clickButtonByText(target.age);
+
+            // 2. CONFIRM STATE
+            addLog(`  - Confirming state...`);
+            const isItemTypeCorrect = await getButtonState(target.itemType);
+            const isFlyableCorrect = await getButtonState('Flyable') === target.properties.flyable;
+            const isRideableCorrect = await getButtonState('Rideable') === target.properties.rideable;
+            const isAgeCorrect = target.age ? await getButtonState(target.age) : true;
+            
+            // 3. RECORD ID
+            if (isItemTypeCorrect && isFlyableCorrect && isRideableCorrect && isAgeCorrect) {
+                const id = page.url().split('/').pop();
+                addLog(`  - State confirmed. ID: ${id}`);
+                addData({ combination: combinationName, id });
+            } else {
+                addLog(`  - ERROR: State confirmation failed. Retrying once...`);
+                // Simple retry logic
+                if (await getButtonState(target.itemType) === false) await clickButtonByText(target.itemType);
+                if (await getButtonState('Flyable') !== target.properties.flyable) await clickButtonByText('Flyable');
+                if (await getButtonState('Rideable') !== target.properties.rideable) await clickButtonByText('Rideable');
+                if (target.age && await getButtonState(target.age) === false) await clickButtonByText(target.age);
+                const id = page.url().split('/').pop();
+                addLog(`  - Re-confirmed state. ID: ${id}`);
+                addData({ combination: combinationName, id });
+            }
+        }
+
+        addLog('Collection process completed successfully.');
         job.status = 'COMPLETED';
 
     } catch (error) {
